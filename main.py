@@ -1,10 +1,12 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, \
-    HTTPException, Query, Depends, UploadFile, File, Response
-from sqlalchemy import create_engine, Column, Integer, String, Text
+    HTTPException, Query, Depends, UploadFile, Response
+from fastapi import status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean, func, text
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.ext.declarative import declarative_base
 from pydantic import BaseModel
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict, Any
 from contextlib import asynccontextmanager
 import numpy as np
 import json
@@ -13,6 +15,9 @@ import asyncio
 import soundfile as sf
 import random
 import argparse
+from datetime import datetime, timedelta, timezone
+import os
+import secrets
 
 import uvicorn
 import sherpa_onnx
@@ -28,6 +33,20 @@ class User(Base):
     username = Column(String, unique=True, index=True)
     identity = Column(String, nullable=True)
     embedding = Column(Text, nullable=True)
+
+
+class EventLog(Base):
+    __tablename__ = "event_logs"
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(String, nullable=True, index=True)
+    user_id = Column(Integer, nullable=True, index=True)
+    username = Column(String, nullable=True)
+    operator = Column(String, nullable=True)
+    type = Column(String, nullable=False)
+    category = Column(String, nullable=True)
+    authorized = Column(Boolean, default=True)
+    payload = Column(Text, nullable=True)
+    timestamp = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
 Base.metadata.create_all(bind=engine)
@@ -47,6 +66,228 @@ class IdentifyResponse(BaseModel):
     similarity: float
     topk: list
     threshold: float
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+class TokenPayload(BaseModel):
+    id: int
+    username: str
+    role: str
+    display_name: Optional[str] = None
+
+class TokenResponse(BaseModel):
+    token: str
+    expires_in: int
+    user: TokenPayload
+    refresh_token: str
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+class RefreshResponse(BaseModel):
+    token: str
+    expires_in: int
+    refresh_token: Optional[str] = None
+
+class LogEntryResponse(BaseModel):
+    id: int
+    timestamp: str
+    type: str
+    session_id: Optional[str] = None
+    operator: Optional[str] = None
+    authorized: Optional[bool] = None
+    payload: Optional[Dict[str, Any]] = None
+    username: Optional[str] = None
+    user_id: Optional[int] = None
+    category: Optional[str] = None
+
+class LogsResponse(BaseModel):
+    items: List[LogEntryResponse]
+    total: int
+    page: int
+    page_size: int
+
+class HealthResponse(BaseModel):
+    status: str
+    uptime_seconds: int
+    asr_model: Optional[str]
+    speaker_model: Optional[str]
+    asr_ready: bool
+    speaker_ready: bool
+    database: str
+
+class MetricsResponse(BaseModel):
+    active_sessions: int
+    avg_recognition_latency_ms: float
+    avg_embedding_similarity: float
+    undetermined_speaker_rate: float
+    audio_queue_depth: int
+
+
+ACCESS_TOKEN_TTL = int(os.getenv("ACCESS_TOKEN_TTL", "3600"))
+REFRESH_TOKEN_TTL = int(os.getenv("REFRESH_TOKEN_TTL", str(7 * 24 * 3600)))
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "voice123")
+ADMIN_DISPLAY_NAME = os.getenv("ADMIN_DISPLAY_NAME", "指挥员 张伟")
+ADMIN_ROLE = os.getenv("ADMIN_ROLE", "admin")
+
+security = HTTPBearer(auto_error=False)
+
+access_tokens: Dict[str, Dict[str, Any]] = {}
+refresh_tokens: Dict[str, Dict[str, Any]] = {}
+token_lock = asyncio.Lock()
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _to_iso(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _parse_iso8601(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        if value.endswith("Z"):
+            value = value[:-1] + "+00:00"
+        return datetime.fromisoformat(value)
+    except Exception:
+        return None
+
+
+async def _issue_tokens(user_payload: TokenPayload) -> TokenResponse:
+    access_token = secrets.token_urlsafe(32)
+    refresh_token = secrets.token_urlsafe(40)
+    now = _now()
+    access_exp = now + timedelta(seconds=ACCESS_TOKEN_TTL)
+    refresh_exp = now + timedelta(seconds=REFRESH_TOKEN_TTL)
+
+    record = {
+        "token": access_token,
+        "user": user_payload.dict(),
+        "expires_at": access_exp,
+    }
+    refresh_record = {
+        "refresh_token": refresh_token,
+        "user": user_payload.dict(),
+        "expires_at": refresh_exp,
+    }
+
+    async with token_lock:
+        access_tokens[access_token] = record
+        refresh_tokens[refresh_token] = refresh_record
+
+    return TokenResponse(
+        token=access_token,
+        expires_in=ACCESS_TOKEN_TTL,
+        user=user_payload,
+        refresh_token=refresh_token,
+    )
+
+
+async def _refresh_access_token(refresh_token: str) -> TokenResponse:
+    now = _now()
+    async with token_lock:
+        record = refresh_tokens.get(refresh_token)
+        if not record:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
+        if record["expires_at"] <= now:
+            del refresh_tokens[refresh_token]
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Expired refresh token")
+
+        # issue new access token
+        user_payload = TokenPayload(**record["user"])
+
+    response = await _issue_tokens(user_payload)
+    return response
+
+
+async def _validate_access_token(token: str) -> TokenPayload:
+    if not token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing access token")
+
+    now = _now()
+    async with token_lock:
+        record = access_tokens.get(token)
+        if not record:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid access token")
+        if record["expires_at"] <= now:
+            del access_tokens[token]
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired")
+        return TokenPayload(**record["user"])
+
+
+def _authenticate_user(username: str, password: str) -> Optional[TokenPayload]:
+    if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
+        return TokenPayload(id=0, username=username, role=ADMIN_ROLE, display_name=ADMIN_DISPLAY_NAME)
+    return None
+
+
+async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> TokenPayload:
+    if credentials is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authorization header missing")
+    return await _validate_access_token(credentials.credentials)
+
+
+async def require_admin(user: TokenPayload = Depends(get_current_user)) -> TokenPayload:
+    if user.role != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin privileges required")
+    return user
+
+
+def record_event_log(
+    *,
+    session_id: Optional[str],
+    user_id: Optional[int],
+    username: Optional[str],
+    operator: Optional[str],
+    event_type: str,
+    category: Optional[str],
+    authorized: Optional[bool],
+    payload: Optional[Dict[str, Any]],
+    timestamp: Optional[datetime] = None,
+) -> None:
+    ts = timestamp or _now()
+    entry = EventLog(
+        session_id=session_id,
+        user_id=user_id,
+        username=username,
+        operator=operator,
+        type=event_type,
+        category=category,
+        authorized=authorized if authorized is not None else True,
+        payload=json.dumps(payload, ensure_ascii=False) if payload is not None else None,
+        timestamp=ts,
+    )
+    with SessionLocal() as db:
+        db.add(entry)
+        db.commit()
+
+
+def serialize_event_log(log: EventLog) -> LogEntryResponse:
+    payload: Optional[Dict[str, Any]] = None
+    if log.payload:
+        try:
+            payload = json.loads(log.payload)
+        except json.JSONDecodeError:
+            payload = None
+    timestamp = log.timestamp or _now()
+    return LogEntryResponse(
+        id=log.id,
+        timestamp=_to_iso(timestamp),
+        type=log.type,
+        session_id=log.session_id,
+        operator=log.operator,
+        authorized=log.authorized,
+        payload=payload,
+        username=log.username,
+        user_id=log.user_id,
+        category=log.category,
+    )
 class SpeakerEmbedder:
     def __init__(
         self, 
@@ -64,24 +305,27 @@ class SpeakerEmbedder:
         self.extractor = sherpa_onnx.SpeakerEmbeddingExtractor(self.config)
         self.manager = sherpa_onnx.SpeakerEmbeddingManager(self.extractor.dim)
         self.threshold = threshold
+        self.sample_rate = sample_rate
+
+    def create_stream(self):
+        return self.extractor.create_stream()
+
+    def is_ready(self, stream):
+        return self.extractor.is_ready(stream)
+
+    def compute(self, stream):
+        return self.extractor.compute(stream)
 
     def embed(self, samples, sample_rate):
-
-        stream = self.extractor.create_stream()
+        stream = self.create_stream()
         stream.accept_waveform(sample_rate=sample_rate, waveform=samples)
         stream.input_finished()
 
-        assert self.extractor.is_ready(stream)
-        embedding = self.extractor.compute(stream)
-        embedding = np.array(embedding)
+        if not self.is_ready(stream):
+            raise RuntimeError("Speaker embedding extractor is not ready")
 
-        return embedding    
-
-    def search(self):
-        pass
-    
-    def __call__(self, *args, **kwds):
-        pass
+        embedding = self.compute(stream)
+        return np.asarray(embedding, dtype=np.float32)
 
 
 def _pcm_bytes_to_float32(data: bytes, dtype: Optional[str]) -> np.ndarray:
@@ -104,8 +348,9 @@ class AsrSession:
         self.recognizer = app.state.recognizer
         self.embedder: SpeakerEmbedder = app.state.embedder
 
-        self.sample_rate_client = 16000
+        self.sample_rate_client = getattr(self.embedder, "sample_rate", None) or self.args.sample_rate or 16000
         self.dtype = "float32"
+        self.dtype_hint = "float32"
 
         self.stream = self.recognizer.create_stream()
         self.total_samples_in = 0
@@ -129,9 +374,23 @@ class AsrSession:
         st.accept_waveform(sample_rate=self.sample_rate_client, waveform=buf)
         if force:
             st.input_finished()
+        if not self.embedder.is_ready(st):
+            return "unknown", 0.0
         emb = self.embedder.compute(st)
+        emb = np.asarray(emb, dtype=np.float32)
 
         matched, top_sim, _topk = identify_user(emb, threshold=self.args.threshold)
+
+        if force:
+            metrics = getattr(self.app.state, "session_metrics", None)
+            if metrics is not None:
+                sims = metrics.setdefault("similarity_samples", [])
+                sims.append(float(top_sim))
+                if len(sims) > 200:
+                    metrics["similarity_samples"] = sims[-200:]
+                if matched is None:
+                    metrics["undetermined_count"] = int(metrics.get("undetermined_count", 0)) + 1
+
         if matched is None:
             return "unknown", float(top_sim)
         return matched, float(top_sim)
@@ -146,7 +405,7 @@ class AsrSession:
             "speaker": speaker,
         })
 
-    async def _send_final(self, text: str, speaker: str):
+    async def _send_final(self, text: str, speaker: str, similarity: float):
         await self.ws.send_json({
             "type": "final",
             "segment_id": self.segment_id,
@@ -154,7 +413,25 @@ class AsrSession:
             "end_ms": _ms(self.total_samples_in, self.sample_rate_client),
             "text": text,
             "speaker": speaker,
+            "similarity": similarity,
         })
+
+        record_event_log(
+            session_id=self.ws.scope.get("session_id"),
+            user_id=None,
+            username=speaker if speaker != "unknown" else None,
+            operator=speaker if speaker != "unknown" else None,
+            event_type="transcript",
+            category="final",
+            authorized=speaker != "unknown",
+            payload={
+                "text": text,
+                "segment_id": self.segment_id,
+                "similarity": similarity,
+                "start_ms": _ms(self.cur_utt_start_sample, self.sample_rate_client),
+                "end_ms": _ms(self.total_samples_in, self.sample_rate_client),
+            },
+        )
 
         self.segment_id += 1
         self.cur_utt_start_sample = self.total_samples_in
@@ -166,6 +443,12 @@ class AsrSession:
         samples = _pcm_bytes_to_float32(data, self.dtype_hint)
         self.total_samples_in += samples.size
         self.cur_utt_audio.append(samples)
+        metrics = getattr(self.app.state, "session_metrics", None)
+        if metrics is not None:
+            metrics["audio_queue_depth"] = max(
+                int(metrics.get("audio_queue_depth", 0)),
+                len(self.cur_utt_audio),
+            )
 
         # 2) 喂给 ASR（内部重采样）
         self.stream.accept_waveform(self.sample_rate_client, samples)
@@ -185,8 +468,8 @@ class AsrSession:
 
         # 4) 端点：定格该话段并重置
         if self.recognizer.is_endpoint(self.stream):
-            final_spk, _sim = self._try_speaker(force=True)
-            await self._send_final(text, final_spk)
+            final_spk, final_sim = self._try_speaker(force=True)
+            await self._send_final(text, final_spk, final_sim)
             self.recognizer.reset(self.stream)
 
     async def handle_done(self):
@@ -197,8 +480,8 @@ class AsrSession:
         """
         text = self.recognizer.get_result(self.stream)
         if text.strip():
-            final_spk, _ = self._try_speaker(force=True)
-            await self._send_final(text, final_spk)
+            final_spk, final_sim = self._try_speaker(force=True)
+            await self._send_final(text, final_spk, final_sim)
 
 # Utility functions
 def get_db():
@@ -231,6 +514,7 @@ def parse_args():
     parser.add_argument("--blank_penalty", type=float, default=0.0)
     parser.add_argument("--hr_lexicon", type=str, default="")
     parser.add_argument("--hr_rule_fsts", type=str, default="")
+    parser.add_argument("--min_spk_seconds", type=float, default=1.5)
 
     args = parser.parse_args()
 
@@ -241,21 +525,34 @@ def cosine_similarity(a, b):
     return float(np.dot(a, b) / denom)
 
 def identify_user(query_embedding: np.ndarray, threshold: float) -> tuple:
-    db = next(get_db())
-    users = db.query(User).all()
-
     sims = []
-    for user in users:
-        stored_embedding = np.array(json.loads(user.embedding), dtype=np.float32)
-        sim = cosine_similarity(query_embedding, stored_embedding)
-        sims.append((user.username, sim))
+    if query_embedding is None or query_embedding.size == 0:
+        return None, 0.0, sims
+
+    with SessionLocal() as db:
+        users = db.query(User).filter(User.embedding.isnot(None)).all()
+
+        for user in users:
+            if not user.embedding:
+                continue
+            try:
+                stored_embedding = np.array(json.loads(user.embedding), dtype=np.float32)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue
+            if stored_embedding.size == 0:
+                continue
+            sim = cosine_similarity(query_embedding, stored_embedding)
+            sims.append((user.username, sim))
+
+    if not sims:
+        return None, 0.0, []
 
     sims.sort(key=lambda x: x[1], reverse=True)
     topk = sims[:5]
-    top_user, top_sim = sims[0]
+    top_user, top_sim = topk[0]
 
     matched = top_user if top_sim >= threshold else None
-    return matched, top_sim, topk
+    return matched, float(top_sim), topk
 
 def create_recognizer(
     tokens: str = "",
@@ -301,6 +598,14 @@ def create_app(args):
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.args = args
+        app.state.start_time = _now()
+        app.state.session_metrics = {
+            "active_sessions": 0,
+            "latency_samples": [],
+            "similarity_samples": [],
+            "undetermined_count": 0,
+            "audio_queue_depth": 0,
+        }
 
         app.state.recognizer = create_recognizer(
             tokens=args.tokens,
@@ -328,9 +633,46 @@ def create_app(args):
 
     app = FastAPI(lifespan=lifespan)
 
+    @app.post("/auth/login", response_model=TokenResponse, status_code=status.HTTP_200_OK)
+    async def login(payload: LoginRequest):
+        user_payload = _authenticate_user(payload.username, payload.password)
+        if not user_payload:
+            record_event_log(
+                session_id=None,
+                user_id=None,
+                username=payload.username,
+                operator=None,
+                event_type="auth",
+                category="login_failed",
+                authorized=False,
+                payload={"reason": "INVALID_CREDENTIALS"},
+            )
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="INVALID_CREDENTIALS")
+
+        token_response = await _issue_tokens(user_payload)
+        record_event_log(
+            session_id=None,
+            user_id=user_payload.id,
+            username=user_payload.username,
+            operator=user_payload.display_name,
+            event_type="auth",
+            category="login",
+            authorized=True,
+            payload={"expires_in": token_response.expires_in},
+        )
+        return token_response
+
+    @app.post("/auth/refresh", response_model=RefreshResponse, status_code=status.HTTP_200_OK)
+    async def refresh_token(payload: RefreshRequest):
+        token_response = await _refresh_access_token(payload.refresh_token)
+        return RefreshResponse(token=token_response.token, expires_in=token_response.expires_in, refresh_token=token_response.refresh_token)
+
     # User相关
     @app.get("/users", response_model=list[UserResponse])
-    async def get_users(db: Session = Depends(get_db)):
+    async def get_users(
+        db: Session = Depends(get_db),
+        current_user: TokenPayload = Depends(get_current_user),
+    ):
         users = db.query(User).all()
         return [
             UserResponse(
@@ -343,7 +685,11 @@ def create_app(args):
         ]
 
     @app.get("/users/{user_id}", response_model=UserResponse)
-    async def get_user_by_id(user_id: int, db: Session = Depends(get_db)):
+    async def get_user_by_id(
+        user_id: int,
+        db: Session = Depends(get_db),
+        current_user: TokenPayload = Depends(get_current_user),
+    ):
         user = db.query(User).filter(User.id == user_id).first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
@@ -353,7 +699,11 @@ def create_app(args):
         )
     
     @app.post("/users", response_model=UserResponse, status_code=201)
-    async def create_user(payload: UserCreateAndUpdate, db: Session = Depends(get_db)):
+    async def create_user(
+        payload: UserCreateAndUpdate,
+        db: Session = Depends(get_db),
+        _: TokenPayload = Depends(require_admin),
+    ):
         user = User(username=payload.username, identity=payload.identity)
         db.add(user)
         db.commit()
@@ -366,7 +716,12 @@ def create_app(args):
         )
 
     @app.patch("/users/{user_id}", response_model=UserResponse)
-    async def update_user_by_id(user_id: int, payload: UserCreateAndUpdate, db: Session = Depends(get_db)):
+    async def update_user_by_id(
+        user_id: int,
+        payload: UserCreateAndUpdate,
+        db: Session = Depends(get_db),
+        _: TokenPayload = Depends(require_admin),
+    ):
         user = db.query(User).filter(User.id == user_id).first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
@@ -387,7 +742,11 @@ def create_app(args):
         )
 
     @app.delete("/users/{user_id}", status_code=204)
-    async def delete_user_by_id(user_id: int, db: Session = Depends(get_db)):
+    async def delete_user_by_id(
+        user_id: int,
+        db: Session = Depends(get_db),
+        _: TokenPayload = Depends(require_admin),
+    ):
         user = db.query(User).filter(User.id == user_id).first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
@@ -396,7 +755,11 @@ def create_app(args):
         return Response(status_code=204)
 
     @app.delete("/users/by-username/{username}", status_code=204)
-    async def delete_user_by_username(username: str, db: Session = Depends(get_db)):
+    async def delete_user_by_username(
+        username: str,
+        db: Session = Depends(get_db),
+        _: TokenPayload = Depends(require_admin),
+    ):
         user = db.query(User).filter(User.username == username).first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
@@ -409,7 +772,8 @@ def create_app(args):
     async def embedding(
         user_id: int,
         files: List[UploadFile],
-        db: Session = Depends(get_db)
+        db: Session = Depends(get_db),
+        _: TokenPayload = Depends(require_admin),
     ):
         user = db.query(User).filter(User.id == user_id).first()
         if not user:
@@ -428,27 +792,29 @@ def create_app(args):
                 with io.BytesIO(raw) as bio:
                     data, sample_rate = sf.read(bio, always_2d=True, dtype="float32")
             except Exception as e:
-                raise 
+                raise HTTPException(status_code=400, detail=f"Failed to decode {f.filename}: {e}") from e
+
+            if sample_rate != embedder.sample_rate:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Sample rate mismatch for {f.filename}: expected {embedder.sample_rate}, got {sample_rate}"
+                )
 
             data = data[:, 0]  # use only the first channel
-            samples = np.ascontiguousarray(data)
-
-            stream = embedder.create_stream()
-            stream.accept_waveform(sample_rate=sample_rate, waveform=samples)
-            stream.input_finished()
-
-            assert embedder.is_ready(stream)
-            embedding = embedder.compute(stream)
-            embedding = np.array(embedding)
+            samples = np.ascontiguousarray(data, dtype=np.float32)
+            embedding = embedder.embed(samples, sample_rate)
 
             if ans is None:
                 ans = embedding
             else:
                 ans += embedding
 
-        ans = ans / len(files)
+        if ans is None:
+            raise HTTPException(status_code=500, detail="Failed to compute embeddings")
 
-        user.embedding = json.dump(ans)
+        ans = ans / len(files)
+        user.embedding = json.dumps(ans.tolist())
+
         db.commit()
         db.refresh(user)
 
@@ -459,9 +825,118 @@ def create_app(args):
             has_voiceprint=True
         )
 
+    @app.get("/logs", response_model=LogsResponse)
+    async def get_logs(
+        type: Optional[str] = Query(None, description="Filter by log type"),
+        authorized: Optional[bool] = Query(None),
+        user_id: Optional[int] = Query(None),
+        username: Optional[str] = Query(None),
+        from_ts: Optional[str] = Query(None, alias="from"),
+        to_ts: Optional[str] = Query(None, alias="to"),
+        page: int = Query(1, ge=1),
+        page_size: int = Query(50, ge=1, le=200),
+        current_user: TokenPayload = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ):
+        query = db.query(EventLog)
+
+        if type:
+            query = query.filter(EventLog.type == type)
+        if authorized is not None:
+            query = query.filter(EventLog.authorized == authorized)
+        if user_id is not None:
+            query = query.filter(EventLog.user_id == user_id)
+        if username is not None:
+            query = query.filter(EventLog.username == username)
+
+        from_dt = _parse_iso8601(from_ts)
+        to_dt = _parse_iso8601(to_ts)
+        if from_dt:
+            query = query.filter(EventLog.timestamp >= from_dt)
+        if to_dt:
+            query = query.filter(EventLog.timestamp <= to_dt)
+
+        total = query.with_entities(func.count(EventLog.id)).scalar() or 0
+        items = (
+            query.order_by(EventLog.timestamp.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .all()
+        )
+        data = [serialize_event_log(item) for item in items]
+        return LogsResponse(items=data, total=total, page=page, page_size=page_size)
+
+    @app.get("/status/health", response_model=HealthResponse)
+    async def health():
+        start_time: Optional[datetime] = getattr(app.state, "start_time", None)
+        uptime = int((_now() - start_time).total_seconds()) if start_time else 0
+        asr_ready = getattr(app.state, "recognizer", None) is not None
+        speaker_ready = getattr(app.state, "embedder", None) is not None
+        db_status = "ok"
+        try:
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+        except Exception:
+            db_status = "error"
+
+        args = getattr(app.state, "args", argparse.Namespace())
+        asr_model = getattr(args, "encoder", None)
+        speaker_model = getattr(args, "model_path", None)
+
+        return HealthResponse(
+            status="ok" if all([asr_ready, speaker_ready, db_status == "ok"]) else "degraded",
+            uptime_seconds=uptime,
+            asr_model=asr_model,
+            speaker_model=speaker_model,
+            asr_ready=asr_ready,
+            speaker_ready=speaker_ready,
+            database=db_status,
+        )
+
+    @app.get("/status/metrics", response_model=MetricsResponse)
+    async def metrics(_: TokenPayload = Depends(require_admin)):
+        metrics = getattr(app.state, "session_metrics", None) or {}
+        latency_samples: List[float] = metrics.get("latency_samples", [])
+        similarity_samples: List[float] = metrics.get("similarity_samples", [])
+        undetermined = metrics.get("undetermined_count", 0)
+        audio_depth = metrics.get("audio_queue_depth", 0)
+
+        avg_latency = float(sum(latency_samples) / len(latency_samples)) if latency_samples else 0.0
+        avg_similarity = float(sum(similarity_samples) / len(similarity_samples)) if similarity_samples else 0.0
+        active_sessions = int(metrics.get("active_sessions", 0))
+        undetermined_rate = (
+            float(undetermined / len(similarity_samples)) if similarity_samples else 0.0
+        )
+
+        return MetricsResponse(
+            active_sessions=active_sessions,
+            avg_recognition_latency_ms=avg_latency,
+            avg_embedding_similarity=avg_similarity,
+            undetermined_speaker_rate=undetermined_rate,
+            audio_queue_depth=int(audio_depth),
+        )
+
     @app.websocket("/ws/asr")
     async def ws_identify(websocket: WebSocket):
+        session_id = f"sess-{int(_now().timestamp() * 1000)}-{random.randint(1000, 9999)}"
         await websocket.accept()
+        websocket.scope["session_id"] = session_id
+
+        metrics = getattr(app.state, "session_metrics", None)
+        if metrics is not None:
+            metrics["active_sessions"] = int(metrics.get("active_sessions", 0)) + 1
+
+        record_event_log(
+            session_id=session_id,
+            user_id=None,
+            username=None,
+            operator=None,
+            event_type="session",
+            category="open",
+            authorized=True,
+            payload={"session_id": session_id},
+        )
+
         session = AsrSession(websocket, app)
 
         try:
@@ -481,13 +956,46 @@ def create_app(args):
                         return
 
         except WebSocketDisconnect:
+            record_event_log(
+                session_id=session_id,
+                user_id=None,
+                username=None,
+                operator=None,
+                event_type="session",
+                category="disconnect",
+                authorized=True,
+                payload={"reason": "client_disconnected"},
+            )
             return
         except Exception as e:
+            record_event_log(
+                session_id=session_id,
+                user_id=None,
+                username=None,
+                operator=None,
+                event_type="session",
+                category="error",
+                authorized=False,
+                payload={"error": str(e)},
+            )
             try:
                 await websocket.send_json({"type": "error", "msg": str(e)})
             except Exception:
                 pass
             raise
+        finally:
+            if metrics is not None:
+                metrics["active_sessions"] = max(0, int(metrics.get("active_sessions", 1)) - 1)
+            record_event_log(
+                session_id=session_id,
+                user_id=None,
+                username=None,
+                operator=None,
+                event_type="session",
+                category="close",
+                authorized=True,
+                payload={"session_id": session_id},
+            )
 
     return app
 
