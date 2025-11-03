@@ -14,6 +14,14 @@ from ..services.events import record_event_log
 
 
 logger = logging.getLogger("asr.session")
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s [%(levelname)s] %(name)s - %(message)s", "%Y-%m-%d %H:%M:%S")
+    )
+    logger.addHandler(handler)
+logger.setLevel(logging.INFO)
+logger.propagate = False
 
 
 class SpeakerEmbedder:
