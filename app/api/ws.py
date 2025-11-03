@@ -44,11 +44,11 @@ async def ws_identify(websocket: WebSocket):
                 continue
 
             txt = msg.get("text")
-            if txt is not None and txt.strip().upper() == "DONE":
-                await session.handle_done()
-                await websocket.send_json({"type": "done"})
-                await websocket.close()
-                return
+            if txt is not None:
+                should_close = await session.handle_text_message(txt)
+                if should_close:
+                    return
+                continue
 
     except WebSocketDisconnect:
         record_event_log(
