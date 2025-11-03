@@ -2,6 +2,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, \
     HTTPException, Query, Depends, UploadFile, Response
 from fastapi import status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean, func, text
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.ext.declarative import declarative_base
@@ -632,6 +633,17 @@ def create_app(args):
         yield
 
     app = FastAPI(lifespan=lifespan)
+
+    allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
+    allowed_origins = [origin.strip() for origin in allowed_origins_env.split(",") if origin.strip()]
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allowed_origins or ["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     @app.post("/auth/login", response_model=TokenResponse, status_code=status.HTTP_200_OK)
     async def login(payload: LoginRequest):
