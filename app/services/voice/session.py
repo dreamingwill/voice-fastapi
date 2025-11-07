@@ -4,14 +4,11 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-import sherpa_onnx
-
 from fastapi import FastAPI, WebSocket
 
-from ..database import SessionLocal
-from ..models import User
-from ..services.events import record_event_log
-
+from ..events import record_event_log
+from .recognizer import pcm_bytes_to_float32
+from .speaker import SpeakerCandidate, SpeakerEmbedder, identify_user
 
 logger = logging.getLogger("asr.session")
 if not logger.handlers:
@@ -22,166 +19,6 @@ if not logger.handlers:
     logger.addHandler(handler)
 logger.setLevel(logging.INFO)
 logger.propagate = False
-
-
-class SpeakerEmbedder:
-    def __init__(
-        self,
-        model_path: str = "./models/3dspeaker_speech_eres2net_large_sv_zh-cn_3dspeaker_16k.onnx",
-        sample_rate: int = 16000,
-        threshold: float = 0.6,
-    ):
-        self.model_path = model_path
-        self.sample_rate = sample_rate
-        self.config = sherpa_onnx.SpeakerEmbeddingExtractorConfig(
-            model=self.model_path,
-            num_threads=4,
-            provider="cpu",
-        )
-        self.extractor = sherpa_onnx.SpeakerEmbeddingExtractor(self.config)
-        self.manager = sherpa_onnx.SpeakerEmbeddingManager(self.extractor.dim)
-        self.threshold = threshold
-
-    def create_stream(self):
-        return self.extractor.create_stream()
-
-    def is_ready(self, stream):
-        return self.extractor.is_ready(stream)
-
-    def compute(self, stream):
-        return self.extractor.compute(stream)
-
-    def embed(self, samples, sample_rate):
-        stream = self.create_stream()
-        stream.accept_waveform(sample_rate=sample_rate, waveform=samples)
-        stream.input_finished()
-
-        if not self.is_ready(stream):
-            raise RuntimeError("Speaker embedding extractor is not ready")
-
-        embedding = self.compute(stream)
-        return np.asarray(embedding, dtype=np.float32)
-
-
-def cosine_similarity(a, b):
-    denom = (np.linalg.norm(a) * np.linalg.norm(b)) + 1e-10
-    return float(np.dot(a, b) / denom)
-
-
-SpeakerCandidate = Dict[str, Any]
-
-
-def identify_user(
-    query_embedding: np.ndarray, threshold: float
-) -> Tuple[Optional[SpeakerCandidate], float, List[SpeakerCandidate]]:
-    sims: List[Tuple[SpeakerCandidate, float]] = []
-    if query_embedding is None or query_embedding.size == 0:
-        return None, 0.0, []
-
-    with SessionLocal() as db:
-        users = db.query(User).filter(User.embedding.isnot(None)).all()
-
-        for user in users:
-            if not user.embedding:
-                continue
-            try:
-                stored_embedding = np.array(json.loads(user.embedding), dtype=np.float32)
-            except (json.JSONDecodeError, TypeError, ValueError):
-                continue
-            if stored_embedding.size == 0:
-                continue
-            sim = cosine_similarity(query_embedding, stored_embedding)
-            candidate: SpeakerCandidate = {
-                "id": user.id,
-                "username": user.username,
-                "identity": user.identity,
-            }
-            sims.append((candidate, sim))
-
-    if not sims:
-        return None, 0.0, []
-
-    sims.sort(key=lambda x: x[1], reverse=True)
-    topk: List[SpeakerCandidate] = []
-    for candidate, score in sims[:5]:
-        enriched = dict(candidate)
-        enriched["similarity"] = float(score)
-        topk.append(enriched)
-
-    best_candidate = topk[0] if topk else None
-    top_sim = best_candidate.get("similarity", 0.0) if best_candidate else 0.0
-    matched = best_candidate if best_candidate and top_sim >= threshold else None
-
-    return matched, float(top_sim), topk
-
-
-def create_recognizer(
-    tokens: str = "",
-    encoder: str = "",
-    decoder: str = "",
-    joiner: str = "",
-    num_threads: int = 1,
-    sample_rate: int = 16000,
-    feature_dim: int = 80,
-    decoding_method: str = "greedy_search",
-    max_active_paths: int = 4,
-    provider: str = "cpu",
-    hotwords_file: str = "",
-    hotwords_score: float = 1.5,
-    blank_penalty: float = 0.0,
-    hr_rule_fsts: str = "",
-    hr_lexicon: str = "",
-):
-    recognizer = sherpa_onnx.OnlineRecognizer.from_transducer(
-        tokens=tokens,
-        encoder=encoder,
-        decoder=decoder,
-        joiner=joiner,
-        num_threads=num_threads,
-        sample_rate=sample_rate,
-        feature_dim=feature_dim,
-        decoding_method=decoding_method,
-        max_active_paths=max_active_paths,
-        provider=provider,
-        hotwords_file=hotwords_file,
-        hotwords_score=hotwords_score,
-        blank_penalty=blank_penalty,
-        hr_rule_fsts=hr_rule_fsts,
-        hr_lexicon=hr_lexicon,
-        rule1_min_trailing_silence=2.4,
-        rule2_min_trailing_silence=1.2,
-        rule3_min_utterance_length=300,
-    )
-
-    return recognizer
-
-
-def _pcm_bytes_to_float32(data: bytes, dtype: Optional[str]) -> np.ndarray:
-    if not data:
-        return np.zeros(0, dtype=np.float32)
-
-    try:
-        if dtype == "int16":
-            return np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
-        if dtype == "float32":
-            return np.frombuffer(data, dtype=np.float32)
-        if dtype == "int24":
-            x = np.frombuffer(data, dtype=np.uint8).astype(np.int32)
-            x = x.reshape(-1, 3)
-            signed = (
-                (x[:, 0].astype(np.int32) << 16)
-                | (x[:, 1].astype(np.int32) << 8)
-                | x[:, 2].astype(np.int32)
-            )
-            signed = np.where(signed >= 0x800000, signed - 0x1000000, signed)
-            return signed.astype(np.float32) / 8388608.0
-        # default fallback: try float32 then int16
-        x = np.frombuffer(data, dtype=np.float32)
-        if x.size == 0:
-            return np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
-        return x
-    except Exception:
-        return np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
 
 
 def _ms(samples: int, sr: int) -> int:
@@ -368,7 +205,7 @@ class AsrSession:
         self.current_speaker_candidate = None
 
     async def handle_binary_audio(self, data: bytes):
-        samples = _pcm_bytes_to_float32(data, self.dtype_hint)
+        samples = pcm_bytes_to_float32(data, self.dtype_hint)
         self.total_samples_in += samples.size
         self.cur_utt_audio.append(samples)
         metrics = getattr(self.app.state, "session_metrics", None)
@@ -405,7 +242,13 @@ class AsrSession:
             if cand is not None:
                 self.current_speaker_candidate = cand
                 await self._send_speaker_state(cand, final_sim)
-            await self._send_final(text, final_spk, final_sim, topk or self.latest_topk, cand or self.current_speaker_candidate)
+            await self._send_final(
+                text,
+                final_spk,
+                final_sim,
+                topk or self.latest_topk,
+                cand or self.current_speaker_candidate,
+            )
             self.recognizer.reset(self.stream)
 
     async def handle_done(self):
@@ -465,19 +308,23 @@ class AsrSession:
         fmt = str(data.get("format", "PCM16")).upper()
 
         if fmt not in {"PCM16", "PCM16LE"}:
-            await self.ws.send_json({
-                "type": "error",
-                "code": "UNSUPPORTED_AUDIO_FORMAT",
-                "message": f"Unsupported audio format: {fmt}",
-            })
+            await self.ws.send_json(
+                {
+                    "type": "error",
+                    "code": "UNSUPPORTED_AUDIO_FORMAT",
+                    "message": f"Unsupported audio format: {fmt}",
+                }
+            )
             return
 
         if channels != 1:
-            await self.ws.send_json({
-                "type": "error",
-                "code": "UNSUPPORTED_CHANNELS",
-                "message": "Only mono audio is supported",
-            })
+            await self.ws.send_json(
+                {
+                    "type": "error",
+                    "code": "UNSUPPORTED_CHANNELS",
+                    "message": "Only mono audio is supported",
+                }
+            )
             return
 
         self.sample_rate_client = sample_rate
@@ -530,4 +377,4 @@ class AsrSession:
         )
 
 
-__all__ = ["SpeakerEmbedder", "create_recognizer", "identify_user", "AsrSession"]
+__all__ = ["AsrSession"]
