@@ -1,0 +1,12 @@
+{
+  "host": "0.0.0.0",
+  "port": 8000,
+  "model_path": "./models/3dspeaker_speech_eres2net_large_sv_zh-cn_3dspeaker_16k.onnx",
+  "sample_rate": 16000,
+  "threshold": 0.6,
+  "tokens": "./models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/tokens.txt",
+  "encoder": "./models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/encoder-epoch-99-avg-1.onnx",
+  "decoder": "./models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/decoder-epoch-99-avg-1.onnx",
+  "joiner": "./models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/joiner-epoch-99-avg-1.onnx",
+  "num_threads": 4
+}
