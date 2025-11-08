@@ -11,10 +11,37 @@ from sqlalchemy.orm import Session
 from ..auth import get_current_user, require_admin
 from ..database import get_db
 from ..models import User
-from ..schemas import TokenPayload, UserCreateAndUpdate, UserResponse, UsersListResponse
+from ..schemas import (
+    TokenPayload,
+    UserCreateAndUpdate,
+    UserResponse,
+    UserStatusUpdate,
+    UsersListResponse,
+)
 from ..services.events import record_event_log
 
 router = APIRouter(prefix="/api/users", tags=["users"])
+
+
+def _normalize_status(value: Optional[str]) -> str:
+    return "disabled" if (value or "").lower() == "disabled" else "enabled"
+
+
+def _clean_phone(value: Optional[str]) -> Optional[str]:
+    phone = (value or "").strip()
+    return phone or None
+
+
+def _user_to_response(user: User) -> UserResponse:
+    return UserResponse(
+        id=user.id,
+        username=user.username,
+        account=user.account or "",
+        identity=user.identity,
+        phone=user.phone,
+        status=user.status or "enabled",
+        has_voiceprint=bool(user.embedding),
+    )
 
 
 @router.get("", response_model=UsersListResponse)
@@ -35,15 +62,7 @@ async def get_users(
         .limit(page_size)
         .all()
     )
-    data = [
-        UserResponse(
-            id=u.id,
-            username=u.username,
-            identity=u.identity,
-            has_voiceprint=bool(u.embedding),
-        )
-        for u in items
-    ]
+    data = [_user_to_response(u) for u in items]
     return UsersListResponse(items=data, total=total, page=page, page_size=page_size)
 
 
@@ -57,12 +76,7 @@ async def get_user_by_id(
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
-    return UserResponse(
-        id=user.id,
-        username=user.username,
-        identity=user.identity,
-        has_voiceprint=bool(user.embedding),
-    )
+    return _user_to_response(user)
 
 
 @router.post("", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
@@ -71,7 +85,22 @@ async def create_user(
     db: Session = Depends(get_db),
     current_admin: TokenPayload = Depends(require_admin),
 ):
-    user = User(username=payload.username, identity=payload.identity)
+    account = (payload.account or "").strip()
+    if not account:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Account is required")
+    existing_account = db.query(User).filter(User.account == account).first()
+    if existing_account:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Account already exists")
+
+    status_value = _normalize_status(payload.status)
+    phone_value = _clean_phone(payload.phone)
+    user = User(
+        username=payload.username,
+        identity=payload.identity,
+        account=account,
+        phone=phone_value,
+        status=status_value,
+    )
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -83,14 +112,14 @@ async def create_user(
         event_type="operator_change",
         category="create",
         authorized=True,
-        payload={"identity": user.identity},
+        payload={
+            "identity": user.identity,
+            "account": user.account,
+            "status": user.status,
+            "phone": user.phone,
+        },
     )
-    return UserResponse(
-        id=user.id,
-        username=user.username,
-        identity=user.identity,
-        has_voiceprint=bool(getattr(user, "embedding", None)),
-    )
+    return _user_to_response(user)
 
 
 @router.patch("/{user_id}", response_model=UserResponse)
@@ -105,8 +134,6 @@ async def update_user_by_id(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
     changes: Dict[str, Any] = {}
-    original_username = user.username
-    original_identity = user.identity
 
     if payload.username and payload.username != user.username:
         exists = db.query(User).filter(User.username == payload.username).first()
@@ -115,10 +142,29 @@ async def update_user_by_id(
         changes["username"] = {"from": user.username, "to": payload.username}
         user.username = payload.username
 
+    if payload.account and payload.account != user.account:
+        exists_account = db.query(User).filter(User.account == payload.account).first()
+        if exists_account:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Account already exists")
+        changes["account"] = {"from": user.account, "to": payload.account}
+        user.account = payload.account
+
     if payload.identity is not None:
         if payload.identity != user.identity:
             changes["identity"] = {"from": user.identity, "to": payload.identity}
             user.identity = payload.identity
+
+    if payload.phone is not None:
+        phone_value = _clean_phone(payload.phone)
+        if phone_value != user.phone:
+            changes["phone"] = {"from": user.phone, "to": phone_value}
+            user.phone = phone_value
+
+    if payload.status is not None:
+        status_value = _normalize_status(payload.status)
+        if status_value != user.status:
+            changes["status"] = {"from": user.status, "to": status_value}
+            user.status = status_value
 
     db.commit()
     db.refresh(user)
@@ -132,15 +178,10 @@ async def update_user_by_id(
             event_type="operator_change",
             category="update",
             authorized=True,
-            payload={"changes": changes, "original_username": original_username, "original_identity": original_identity},
+            payload={"changes": changes},
         )
 
-    return UserResponse(
-        id=user.id,
-        username=user.username,
-        identity=user.identity,
-        has_voiceprint=bool(user.embedding),
-    )
+    return _user_to_response(user)
 
 
 @router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -155,6 +196,9 @@ async def delete_user_by_id(
     payload = {
         "username": user.username,
         "identity": user.identity,
+        "account": user.account,
+        "phone": user.phone,
+        "status": user.status,
     }
     db.delete(user)
     db.commit()
@@ -180,7 +224,13 @@ async def delete_user_by_username(
     user = db.query(User).filter(User.username == username).first()
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    payload = {"username": user.username, "identity": user.identity}
+    payload = {
+        "username": user.username,
+        "identity": user.identity,
+        "account": user.account,
+        "phone": user.phone,
+        "status": user.status,
+    }
     db.delete(user)
     db.commit()
     record_event_log(
@@ -194,6 +244,36 @@ async def delete_user_by_username(
         payload=payload,
     )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/{user_id}/status", response_model=UserResponse)
+async def update_user_status(
+    user_id: int,
+    payload: UserStatusUpdate,
+    db: Session = Depends(get_db),
+    current_admin: TokenPayload = Depends(require_admin),
+):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    new_status = _normalize_status(payload.status)
+    if user.status != new_status:
+        user.status = new_status
+        db.commit()
+        db.refresh(user)
+        record_event_log(
+            session_id=None,
+            user_id=user.id,
+            username=user.username,
+            operator=current_admin.display_name or current_admin.username,
+            event_type="operator_change",
+            category="status_change",
+            authorized=True,
+            payload={"status": new_status},
+        )
+
+    return _user_to_response(user)
 
 
 @router.post("/{user_id}/voiceprint/aggregate", response_model=UserResponse)
@@ -261,9 +341,4 @@ async def aggregate_voiceprint(
         payload={"file_count": len(files)},
     )
 
-    return UserResponse(
-        id=user.id,
-        username=user.username,
-        identity=user.identity,
-        has_voiceprint=True,
-    )
+    return _user_to_response(user)

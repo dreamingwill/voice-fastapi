@@ -1,13 +1,16 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
+
+CHINA_TZ = timezone(timedelta(hours=8))
 
 
 def now_utc() -> datetime:
-    return datetime.now(timezone.utc)
+    """Return current time in Beijing timezone."""
+    return datetime.now(CHINA_TZ)
 
 
 def to_iso(dt: datetime) -> str:
-    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return dt.astimezone(CHINA_TZ).isoformat()
 
 
 def parse_iso8601(value: Optional[str]) -> Optional[datetime]:

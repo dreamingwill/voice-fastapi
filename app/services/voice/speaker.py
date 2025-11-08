@@ -62,7 +62,12 @@ def identify_user(
         return None, 0.0, []
 
     with SessionLocal() as db:
-        users = db.query(User).filter(User.embedding.isnot(None)).all()
+        users = (
+            db.query(User)
+            .filter(User.embedding.isnot(None))
+            .filter(User.status != "disabled")
+            .all()
+        )
 
         for user in users:
             if not user.embedding:

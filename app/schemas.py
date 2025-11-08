@@ -1,4 +1,5 @@
 from typing import Any, Dict, List, Optional
+from typing_extensions import Literal
 
 from pydantic import BaseModel
 
@@ -6,12 +7,18 @@ from pydantic import BaseModel
 class UserCreateAndUpdate(BaseModel):
     username: str
     identity: Optional[str] = None
+    account: Optional[str] = None
+    phone: Optional[str] = None
+    status: Optional[str] = None
 
 
 class UserResponse(BaseModel):
     id: int
     username: str
+    account: str
     identity: Optional[str] = None
+    phone: Optional[str] = None
+    status: str
     has_voiceprint: bool
 
 
@@ -20,6 +27,10 @@ class UsersListResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+class UserStatusUpdate(BaseModel):
+    status: Literal["enabled", "disabled"]
 
 
 class IdentifyResponse(BaseModel):
@@ -101,6 +112,7 @@ __all__ = [
     "UserCreateAndUpdate",
     "UserResponse",
     "UsersListResponse",
+    "UserStatusUpdate",
     "IdentifyResponse",
     "LoginRequest",
     "TokenPayload",

@@ -8,7 +8,10 @@ class User(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String, unique=True, index=True)
+    account = Column(String, unique=True, index=True)
     identity = Column(String, nullable=True)
+    phone = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="enabled")
     embedding = Column(Text, nullable=True)
 
 
