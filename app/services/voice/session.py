@@ -157,6 +157,7 @@ class AsrSession:
             for item in topk
             if item.get("username")
         ]
+        latency_ms = int((time.perf_counter() - self.cur_utt_started_at) * 1000)
         await self.ws.send_json(
             {
                 "type": "final",
@@ -180,7 +181,6 @@ class AsrSession:
             meta_topk,
         )
 
-        latency_ms = int((time.perf_counter() - self.cur_utt_started_at) * 1000)
         await self._send_meta({"latency": latency_ms})
 
         record_event_log(
