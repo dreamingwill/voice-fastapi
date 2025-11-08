@@ -1,7 +1,8 @@
 database/
 models/
 app/services/__pycache__/
-app/__pycache__/
+app/api/__pycache__
+app/__pycache__
 
 __pycache__/
 *.py[cod]

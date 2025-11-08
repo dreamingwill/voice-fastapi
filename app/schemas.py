@@ -15,6 +15,13 @@ class UserResponse(BaseModel):
     has_voiceprint: bool
 
 
+class UsersListResponse(BaseModel):
+    items: List[UserResponse]
+    total: int
+    page: int
+    page_size: int
+
+
 class IdentifyResponse(BaseModel):
     matched: str
     similarity: float
@@ -93,6 +100,7 @@ class MetricsResponse(BaseModel):
 __all__ = [
     "UserCreateAndUpdate",
     "UserResponse",
+    "UsersListResponse",
     "IdentifyResponse",
     "LoginRequest",
     "TokenPayload",

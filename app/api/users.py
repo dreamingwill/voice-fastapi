@@ -1,36 +1,50 @@
 import io
 import json
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import soundfile as sf
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, UploadFile, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, UploadFile, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..auth import get_current_user, require_admin
 from ..database import get_db
 from ..models import User
-from ..schemas import TokenPayload, UserCreateAndUpdate, UserResponse
+from ..schemas import TokenPayload, UserCreateAndUpdate, UserResponse, UsersListResponse
 from ..services.events import record_event_log
 
 router = APIRouter(prefix="/api/users", tags=["users"])
 
 
-@router.get("", response_model=list[UserResponse])
+@router.get("", response_model=UsersListResponse)
 async def get_users(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    keyword: Optional[str] = Query(None, description="Search by username"),
     db: Session = Depends(get_db),
     current_user: TokenPayload = Depends(get_current_user),
 ):
-    users = db.query(User).all()
-    return [
+    query = db.query(User)
+    if keyword:
+        query = query.filter(User.username.ilike(f"%{keyword}%"))
+    total = query.with_entities(func.count(User.id)).scalar() or 0
+    items = (
+        query.order_by(User.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    data = [
         UserResponse(
             id=u.id,
             username=u.username,
             identity=u.identity,
             has_voiceprint=bool(u.embedding),
         )
-        for u in users
+        for u in items
     ]
+    return UsersListResponse(items=data, total=total, page=page, page_size=page_size)
 
 
 @router.get("/{user_id}", response_model=UserResponse)
