@@ -62,9 +62,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hr_lexicon", type=str, default="")
     parser.add_argument("--hr_rule_fsts", type=str, default="")
     parser.add_argument("--min_spk_seconds", type=float, default=1.5)
-    parser.add_argument("--rule1_min_trailing_silence", type=float, default=2.4)
-    parser.add_argument("--rule2_min_trailing_silence", type=float, default=1.2)
-    parser.add_argument("--rule3_min_utterance_length", type=int, default=300)
+    parser.add_argument("--rule1_min_trailing_silence", type=float, default=0.8)
+    parser.add_argument("--rule2_min_trailing_silence", type=float, default=0.4)
+    parser.add_argument("--rule3_min_utterance_length", type=int, default=15)
     return parser
 
 

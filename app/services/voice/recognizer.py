@@ -1,3 +1,4 @@
+import logging
 from typing import Optional
 
 import numpy as np
@@ -43,6 +44,13 @@ def create_recognizer(
         rule1_min_trailing_silence=rule1_min_trailing_silence,
         rule2_min_trailing_silence=rule2_min_trailing_silence,
         rule3_min_utterance_length=rule3_min_utterance_length,
+    )
+    
+    logging.getLogger("asr.recognizer").info(
+        "rule1_min_trailing_silence=%s, rule2_min_trailing_silence=%s, rule3_min_utterance_length=%s",
+        rule1_min_trailing_silence,
+        rule2_min_trailing_silence,
+        rule3_min_utterance_length,
     )
 
     return recognizer
