@@ -160,5 +160,6 @@ def main():
         sys.exit(1)
 
 
+# python test/ws_test.py --url ws://localhost:8000/ws/asr --chunk-ms 500
 if __name__ == "__main__":
     main()

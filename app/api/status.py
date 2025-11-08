@@ -10,7 +10,7 @@ from ..database import engine
 from ..schemas import HealthResponse, MetricsResponse, TokenPayload
 from ..utils import now_utc
 
-router = APIRouter(prefix="/status", tags=["status"])
+router = APIRouter(prefix="/api/status", tags=["status"])
 
 
 @router.get("/health", response_model=HealthResponse)

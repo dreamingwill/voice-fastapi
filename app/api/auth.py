@@ -4,7 +4,7 @@ from ..auth import authenticate_user, issue_tokens, refresh_access_token
 from ..schemas import LoginRequest, RefreshRequest, RefreshResponse, TokenResponse
 from ..services.events import record_event_log
 
-router = APIRouter(prefix="/auth", tags=["auth"])
+router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
 @router.post("/login", response_model=TokenResponse, status_code=status.HTTP_200_OK)

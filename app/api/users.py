@@ -1,6 +1,6 @@
 import io
 import json
-from typing import List
+from typing import Any, Dict, List
 
 import numpy as np
 import soundfile as sf
@@ -11,8 +11,9 @@ from ..auth import get_current_user, require_admin
 from ..database import get_db
 from ..models import User
 from ..schemas import TokenPayload, UserCreateAndUpdate, UserResponse
+from ..services.events import record_event_log
 
-router = APIRouter(prefix="/users", tags=["users"])
+router = APIRouter(prefix="/api/users", tags=["users"])
 
 
 @router.get("", response_model=list[UserResponse])
@@ -54,12 +55,22 @@ async def get_user_by_id(
 async def create_user(
     payload: UserCreateAndUpdate,
     db: Session = Depends(get_db),
-    _: TokenPayload = Depends(require_admin),
+    current_admin: TokenPayload = Depends(require_admin),
 ):
     user = User(username=payload.username, identity=payload.identity)
     db.add(user)
     db.commit()
     db.refresh(user)
+    record_event_log(
+        session_id=None,
+        user_id=user.id,
+        username=user.username,
+        operator=current_admin.display_name or current_admin.username,
+        event_type="operator_change",
+        category="create",
+        authorized=True,
+        payload={"identity": user.identity},
+    )
     return UserResponse(
         id=user.id,
         username=user.username,
@@ -73,23 +84,43 @@ async def update_user_by_id(
     user_id: int,
     payload: UserCreateAndUpdate,
     db: Session = Depends(get_db),
-    _: TokenPayload = Depends(require_admin),
+    current_admin: TokenPayload = Depends(require_admin),
 ):
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
+    changes: Dict[str, Any] = {}
+    original_username = user.username
+    original_identity = user.identity
+
     if payload.username and payload.username != user.username:
         exists = db.query(User).filter(User.username == payload.username).first()
         if exists:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username already exists")
+        changes["username"] = {"from": user.username, "to": payload.username}
         user.username = payload.username
 
     if payload.identity is not None:
-        user.identity = payload.identity
+        if payload.identity != user.identity:
+            changes["identity"] = {"from": user.identity, "to": payload.identity}
+            user.identity = payload.identity
 
     db.commit()
     db.refresh(user)
+
+    if changes:
+        record_event_log(
+            session_id=None,
+            user_id=user.id,
+            username=user.username,
+            operator=current_admin.display_name or current_admin.username,
+            event_type="operator_change",
+            category="update",
+            authorized=True,
+            payload={"changes": changes, "original_username": original_username, "original_identity": original_identity},
+        )
+
     return UserResponse(
         id=user.id,
         username=user.username,
@@ -102,13 +133,27 @@ async def update_user_by_id(
 async def delete_user_by_id(
     user_id: int,
     db: Session = Depends(get_db),
-    _: TokenPayload = Depends(require_admin),
+    current_admin: TokenPayload = Depends(require_admin),
 ):
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    payload = {
+        "username": user.username,
+        "identity": user.identity,
+    }
     db.delete(user)
     db.commit()
+    record_event_log(
+        session_id=None,
+        user_id=user_id,
+        username=payload["username"],
+        operator=current_admin.display_name or current_admin.username,
+        event_type="operator_change",
+        category="delete",
+        authorized=True,
+        payload=payload,
+    )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -116,13 +161,24 @@ async def delete_user_by_id(
 async def delete_user_by_username(
     username: str,
     db: Session = Depends(get_db),
-    _: TokenPayload = Depends(require_admin),
+    current_admin: TokenPayload = Depends(require_admin),
 ):
     user = db.query(User).filter(User.username == username).first()
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    payload = {"username": user.username, "identity": user.identity}
     db.delete(user)
     db.commit()
+    record_event_log(
+        session_id=None,
+        user_id=user.id,
+        username=user.username,
+        operator=current_admin.display_name or current_admin.username,
+        event_type="operator_change",
+        category="delete",
+        authorized=True,
+        payload=payload,
+    )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -132,7 +188,7 @@ async def aggregate_voiceprint(
     files: List[UploadFile],
     request: Request,
     db: Session = Depends(get_db),
-    _: TokenPayload = Depends(require_admin),
+    current_admin: TokenPayload = Depends(require_admin),
 ):
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
@@ -179,6 +235,17 @@ async def aggregate_voiceprint(
 
     db.commit()
     db.refresh(user)
+
+    record_event_log(
+        session_id=None,
+        user_id=user.id,
+        username=user.username,
+        operator=current_admin.display_name or current_admin.username,
+        event_type="operator_change",
+        category="voiceprint_aggregate",
+        authorized=True,
+        payload={"file_count": len(files)},
+    )
 
     return UserResponse(
         id=user.id,

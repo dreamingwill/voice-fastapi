@@ -62,6 +62,7 @@ class LogEntryResponse(BaseModel):
     username: Optional[str] = None
     user_id: Optional[int] = None
     category: Optional[str] = None
+    redacted: Optional[bool] = None
 
 
 class LogsResponse(BaseModel):

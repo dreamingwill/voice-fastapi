@@ -11,12 +11,13 @@ from ..schemas import LogsResponse, TokenPayload
 from ..services.events import serialize_event_log
 from ..utils import parse_iso8601
 
-router = APIRouter(tags=["logs"])
+router = APIRouter(prefix="/api", tags=["logs"])
 
 
 @router.get("/logs", response_model=LogsResponse)
 async def get_logs(
     type: Optional[str] = Query(None, description="Filter by log type"),
+    category: Optional[str] = Query(None, description="Filter by category"),
     authorized: Optional[bool] = Query(None),
     user_id: Optional[int] = Query(None),
     username: Optional[str] = Query(None),
@@ -24,6 +25,7 @@ async def get_logs(
     to_ts: Optional[str] = Query(None, alias="to"),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
+    include_text: bool = Query(False, description="Include raw transcript content"),
     current_user: TokenPayload = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -31,6 +33,8 @@ async def get_logs(
 
     if type:
         query = query.filter(EventLog.type == type)
+    if category:
+        query = query.filter(EventLog.category == category)
     if authorized is not None:
         query = query.filter(EventLog.authorized == authorized)
     if user_id is not None:
@@ -52,5 +56,5 @@ async def get_logs(
         .limit(page_size)
         .all()
     )
-    data = [serialize_event_log(item) for item in items]
+    data = [serialize_event_log(item, redact_sensitive=not include_text) for item in items]
     return LogsResponse(items=data, total=total, page=page, page_size=page_size)

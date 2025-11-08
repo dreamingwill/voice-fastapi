@@ -36,13 +36,23 @@ def record_event_log(
         db.commit()
 
 
-def serialize_event_log(log: EventLog) -> LogEntryResponse:
+def serialize_event_log(log: EventLog, *, redact_sensitive: bool = True) -> LogEntryResponse:
     payload: Optional[Dict[str, Any]] = None
+    redacted = False
     if log.payload:
         try:
             payload = json.loads(log.payload)
         except json.JSONDecodeError:
             payload = None
+    if (
+        redact_sensitive
+        and log.type in {"transcript"}
+        and isinstance(payload, dict)
+        and "text" in payload
+    ):
+        payload.pop("text", None)
+        payload["redacted"] = True
+        redacted = True
 
     timestamp = log.timestamp or now_utc()
     return LogEntryResponse(
@@ -56,6 +66,7 @@ def serialize_event_log(log: EventLog) -> LogEntryResponse:
         username=log.username,
         user_id=log.user_id,
         category=log.category,
+        redacted=redacted,
     )
 
 
