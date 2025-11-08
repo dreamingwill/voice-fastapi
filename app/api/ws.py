@@ -40,6 +40,7 @@ async def ws_identify(websocket: WebSocket):
                 raise WebSocketDisconnect()
 
             if msg.get("bytes") is not None:
+
                 await session.handle_binary_audio(msg["bytes"])
                 continue
 

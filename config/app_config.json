@@ -8,5 +8,8 @@
   "encoder": "./models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/encoder-epoch-99-avg-1.onnx",
   "decoder": "./models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/decoder-epoch-99-avg-1.onnx",
   "joiner": "./models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/joiner-epoch-99-avg-1.onnx",
-  "num_threads": 4
+  "num_threads": 4,
+  "rule1_min_trailing_silence": 1.2,
+  "rule2_min_trailing_silence": 0.8,
+  "rule3_min_utterance_length": 200
 }

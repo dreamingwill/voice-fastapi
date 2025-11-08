@@ -49,6 +49,9 @@ def create_app(args):
             blank_penalty=args.blank_penalty,
             hr_rule_fsts=args.hr_rule_fsts,
             hr_lexicon=args.hr_lexicon,
+            rule1_min_trailing_silence=args.rule1_min_trailing_silence,
+            rule2_min_trailing_silence=args.rule2_min_trailing_silence,
+            rule3_min_utterance_length=args.rule3_min_utterance_length,
         )
         app.state.embedder = SpeakerEmbedder(
             model_path=args.model_path,

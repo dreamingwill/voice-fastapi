@@ -49,6 +49,9 @@ class AsrSession:
         self.session_info: Dict[str, Any] = {}
         self.latest_topk: List[SpeakerCandidate] = []
         self.current_speaker_candidate: Optional[SpeakerCandidate] = None
+        self._last_partial_logged_text: Optional[str] = None
+        self._last_partial_logged_at = 0.0
+        self._partial_log_interval = 1.0 # seconds
 
     def _concat_cur_utt_audio(self) -> np.ndarray:
         if not self.cur_utt_audio:
@@ -112,15 +115,24 @@ class AsrSession:
     async def _send_meta(self, data: Dict[str, Any]):
         await self.ws.send_json({"type": "meta", "data": data})
 
+    def _should_log_partial(self, text: str) -> bool:
+        now = time.perf_counter()
+        if self._last_partial_logged_text != text or (now - self._last_partial_logged_at) >= self._partial_log_interval:
+            self._last_partial_logged_text = text
+            self._last_partial_logged_at = now
+            return True
+        return False
+
     async def _send_partial(self, text: str, speaker: str):
-        logger.info(
-            "asr.partial session=%s segment=%s speaker=%s start_ms=%s text=%s",
-            self.ws.scope.get("session_id"),
-            self.segment_id,
-            speaker,
-            _ms(self.cur_utt_start_sample, self.sample_rate_client),
-            text,
-        )
+        if self._should_log_partial(text):
+            logger.info(
+                "asr.partial session=%s segment=%s speaker=%s start_ms=%s text=%s",
+                self.ws.scope.get("session_id"),
+                self.segment_id,
+                speaker,
+                _ms(self.cur_utt_start_sample, self.sample_rate_client),
+                text,
+            )
         await self.ws.send_json(
             {
                 "type": "partial",
@@ -205,6 +217,7 @@ class AsrSession:
         self.current_speaker_candidate = None
 
     async def handle_binary_audio(self, data: bytes):
+        chunk_start = time.perf_counter()
         samples = pcm_bytes_to_float32(data, self.dtype_hint)
         self.total_samples_in += samples.size
         self.cur_utt_audio.append(samples)
@@ -215,9 +228,13 @@ class AsrSession:
                 len(self.cur_utt_audio),
             )
 
+        chunk_ms = _ms(samples.size, self.sample_rate_client)
         self.stream.accept_waveform(self.sample_rate_client, samples)
+        decode_iters = 0
         while self.recognizer.is_ready(self.stream):
             self.recognizer.decode_stream(self.stream)
+            decode_iters += 1
+        decode_time_ms = int((time.perf_counter() - chunk_start) * 1000)
 
         text = self.recognizer.get_result(self.stream)
         speaker = (
@@ -225,6 +242,21 @@ class AsrSession:
             if self.cur_utt_speaker_guess_sent
             else "unknown"
         )
+        endpoint_detected = self.recognizer.is_endpoint(self.stream)
+
+        # logger.info(
+        #     (
+        #         "asr.decode session=%s chunk_ms=%s decode_ms=%s decodes=%s "
+        #         "total_ms=%s endpoint=%s text_len=%s"
+        #     ),
+        #     self.ws.scope.get("session_id"),
+        #     chunk_ms,
+        #     decode_time_ms,
+        #     decode_iters,
+        #     _ms(self.total_samples_in, self.sample_rate_client),
+        #     endpoint_detected,
+        #     len(text),
+        # )
 
         if not self.cur_utt_speaker_guess_sent:
             guess, sim, cand, topk = self._try_speaker(force=False)
@@ -236,7 +268,7 @@ class AsrSession:
                 await self._send_speaker_state(cand, sim)
         await self._send_partial(text, speaker)
 
-        if self.recognizer.is_endpoint(self.stream):
+        if endpoint_detected:
             final_spk, final_sim, cand, topk = self._try_speaker(force=True)
             self.latest_topk = topk
             if cand is not None:

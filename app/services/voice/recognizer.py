@@ -20,6 +20,9 @@ def create_recognizer(
     blank_penalty: float = 0.0,
     hr_rule_fsts: str = "",
     hr_lexicon: str = "",
+    rule1_min_trailing_silence: float = 2.4,
+    rule2_min_trailing_silence: float = 1.2,
+    rule3_min_utterance_length: int = 300,
 ):
     recognizer = sherpa_onnx.OnlineRecognizer.from_transducer(
         tokens=tokens,
@@ -37,9 +40,9 @@ def create_recognizer(
         blank_penalty=blank_penalty,
         hr_rule_fsts=hr_rule_fsts,
         hr_lexicon=hr_lexicon,
-        rule1_min_trailing_silence=2.4,
-        rule2_min_trailing_silence=1.2,
-        rule3_min_utterance_length=300,
+        rule1_min_trailing_silence=rule1_min_trailing_silence,
+        rule2_min_trailing_silence=rule2_min_trailing_silence,
+        rule3_min_utterance_length=rule3_min_utterance_length,
     )
 
     return recognizer
