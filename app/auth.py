@@ -6,16 +6,11 @@ from typing import Any, Dict, Optional
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from .config import (
-    ACCESS_TOKEN_TTL,
-    ADMIN_DISPLAY_NAME,
-    ADMIN_PASSWORD,
-    ADMIN_ROLE,
-    ADMIN_USERNAME,
-    REFRESH_TOKEN_TTL,
-)
+from .config import ACCESS_TOKEN_TTL, REFRESH_TOKEN_TTL
+from .database import SessionLocal
+from .models import AdminAccount
 from .schemas import TokenPayload, TokenResponse
-from .utils import now_utc
+from .utils import now_utc, verify_password
 
 
 security = HTTPBearer(auto_error=False)
@@ -100,14 +95,25 @@ async def validate_access_token(token: str) -> TokenPayload:
 
 
 def authenticate_user(username: str, password: str) -> Optional[TokenPayload]:
-    if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
-        return TokenPayload(
-            id=0,
-            username=username,
-            role=ADMIN_ROLE,
-            display_name=ADMIN_DISPLAY_NAME,
+    with SessionLocal() as db:
+        account = (
+            db.query(AdminAccount)
+            .filter(AdminAccount.username == username)
+            .filter(AdminAccount.is_active.is_(True))
+            .first()
         )
-    return None
+        if not account:
+            return None
+        if not verify_password(password, account.password_hash):
+            return None
+        account.last_login_at = now_utc()
+        db.commit()
+        return TokenPayload(
+            id=account.id,
+            username=account.username,
+            role=account.role,
+            display_name=account.display_name,
+        )
 
 
 async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> TokenPayload:
@@ -119,8 +125,11 @@ async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] =
     return await validate_access_token(credentials.credentials)
 
 
+ADMIN_ROLES = {"admin", "super_admin"}
+
+
 async def require_admin(user: TokenPayload = Depends(get_current_user)) -> TokenPayload:
-    if user.role != "admin":
+    if user.role not in ADMIN_ROLES:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin privileges required",

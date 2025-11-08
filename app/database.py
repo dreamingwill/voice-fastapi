@@ -2,7 +2,14 @@ from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.ext.declarative import declarative_base
 
-from .config import DATABASE_URL
+from .config import (
+    ADMIN_DISPLAY_NAME,
+    ADMIN_PASSWORD,
+    ADMIN_ROLE,
+    ADMIN_USERNAME,
+    DATABASE_URL,
+)
+from .utils import hash_password
 
 
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
@@ -16,6 +23,7 @@ def init_db() -> None:
 
     Base.metadata.create_all(bind=engine)
     _ensure_user_columns()
+    _ensure_admin_account()
 
 
 def _ensure_user_columns() -> None:
@@ -47,6 +55,29 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def _ensure_admin_account() -> None:
+    from .models import AdminAccount
+
+    with SessionLocal() as db:
+        super_admin = (
+            db.query(AdminAccount)
+                .filter(AdminAccount.username == ADMIN_USERNAME)
+                .first()
+        )
+        if super_admin is None:
+            db.add(
+                AdminAccount(
+                    username=ADMIN_USERNAME,
+                    password_hash=hash_password(ADMIN_PASSWORD),
+                    role=ADMIN_ROLE or "super_admin",
+                    display_name=ADMIN_DISPLAY_NAME,
+                    is_active=True,
+                    is_builtin=True,
+                )
+            )
+            db.commit()
 
 
 __all__ = ["engine", "SessionLocal", "Base", "init_db", "get_db"]

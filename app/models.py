@@ -15,6 +15,25 @@ class User(Base):
     embedding = Column(Text, nullable=True)
 
 
+class AdminAccount(Base):
+    __tablename__ = "admin_accounts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True, nullable=False)
+    password_hash = Column(String, nullable=False)
+    display_name = Column(String, nullable=True)
+    role = Column(String, nullable=False, default="admin")
+    is_active = Column(Boolean, default=True)
+    is_builtin = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+    last_login_at = Column(DateTime(timezone=True), nullable=True, index=True)
+
+
 class EventLog(Base):
     __tablename__ = "event_logs"
 
@@ -34,4 +53,4 @@ class EventLog(Base):
     )
 
 
-__all__ = ["User", "EventLog"]
+__all__ = ["User", "AdminAccount", "EventLog"]

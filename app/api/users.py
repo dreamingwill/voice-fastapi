@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import soundfile as sf
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, UploadFile, status
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from ..auth import get_current_user, require_admin
@@ -54,7 +54,8 @@ async def get_users(
 ):
     query = db.query(User)
     if keyword:
-        query = query.filter(User.username.ilike(f"%{keyword}%"))
+        like_value = f"%{keyword}%"
+        query = query.filter(or_(User.username.ilike(like_value), User.account.ilike(like_value)))
     total = query.with_entities(func.count(User.id)).scalar() or 0
     items = (
         query.order_by(User.id.desc())
@@ -75,6 +76,8 @@ async def get_user_by_id(
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if user.status == "disabled":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User is disabled")
 
     return _user_to_response(user)
 
