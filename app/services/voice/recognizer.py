@@ -20,8 +20,8 @@ def create_recognizer(
     blank_penalty: float = 0.0,
     hr_rule_fsts: str = "",
     hr_lexicon: str = "",
-    rule1_min_trailing_silence: float = 2.4,
-    rule2_min_trailing_silence: float = 1.2,
+    rule1_min_trailing_silence: float = 1.2,
+    rule2_min_trailing_silence: float = 0.8,
     rule3_min_utterance_length: int = 300,
 ):
     recognizer = sherpa_onnx.OnlineRecognizer.from_transducer(

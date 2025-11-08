@@ -1,3 +1,4 @@
+import logging
 import os
 from contextlib import asynccontextmanager
 
@@ -21,6 +22,15 @@ def create_app(args):
     allowed_origins_env = os.getenv("ALLOWED_ORIGINS", DEFAULT_ALLOWED_ORIGINS)
     allowed_origins = [origin.strip() for origin in allowed_origins_env.split(",") if origin.strip()]
 
+    logger = logging.getLogger("app.startup")
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s [%(levelname)s] %(name)s - %(message)s", "%Y-%m-%d %H:%M:%S")
+        )
+        logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.args = args
@@ -32,6 +42,36 @@ def create_app(args):
             "undetermined_count": 0,
             "audio_queue_depth": 0,
         }
+
+        logger.info(
+            (
+                "initializing recognizer host=%s port=%s tokens=%s encoder=%s "
+                "decoder=%s joiner=%s provider=%s sample_rate=%s feature_dim=%s "
+                "decoding=%s max_paths=%s threads=%s hotwords_file=%s "
+                "hotwords_score=%.2f blank_penalty=%.2f hr_rule_fsts=%s hr_lexicon=%s "
+                "rule1=%.3f rule2=%.3f rule3=%s"
+            ),
+            args.host,
+            args.port,
+            args.tokens,
+            args.encoder,
+            args.decoder,
+            args.joiner,
+            args.provider,
+            args.sample_rate,
+            args.feature_dim,
+            args.decoding_method,
+            args.max_active_paths,
+            args.num_threads,
+            args.hotwords_file or "",
+            args.hotwords_score,
+            args.blank_penalty,
+            args.hr_rule_fsts or "",
+            args.hr_lexicon or "",
+            args.rule1_min_trailing_silence,
+            args.rule2_min_trailing_silence,
+            args.rule3_min_utterance_length,
+        )
 
         app.state.recognizer = create_recognizer(
             tokens=args.tokens,
@@ -57,6 +97,13 @@ def create_app(args):
             model_path=args.model_path,
             sample_rate=args.sample_rate,
             threshold=args.threshold,
+        )
+        logger.info(
+            "initializing embedder model=%s sample_rate=%s threshold=%.3f min_spk_seconds=%.2f",
+            args.model_path,
+            args.sample_rate,
+            args.threshold,
+            args.min_spk_seconds,
         )
         try:
             yield
