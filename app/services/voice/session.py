@@ -51,7 +51,8 @@ class AsrSession:
         self.current_speaker_candidate: Optional[SpeakerCandidate] = None
         self._last_partial_logged_text: Optional[str] = None
         self._last_partial_logged_at = 0.0
-        self._partial_log_interval = 1.0 # seconds
+        self._partial_log_interval = 0.5  # seconds
+        self._last_partial_text_sent: Optional[str] = None
 
     def _concat_cur_utt_audio(self) -> np.ndarray:
         if not self.cur_utt_audio:
@@ -116,6 +117,8 @@ class AsrSession:
         await self.ws.send_json({"type": "meta", "data": data})
 
     def _should_log_partial(self, text: str) -> bool:
+        if text == self._last_partial_text_sent:
+            return False
         now = time.perf_counter()
         if self._last_partial_logged_text != text or (now - self._last_partial_logged_at) >= self._partial_log_interval:
             self._last_partial_logged_text = text
@@ -124,6 +127,9 @@ class AsrSession:
         return False
 
     async def _send_partial(self, text: str, speaker: str):
+        if text == self._last_partial_text_sent:
+            return
+        self._last_partial_text_sent = text
         if self._should_log_partial(text):
             logger.info(
                 "asr.partial session=%s segment=%s speaker=%s start_ms=%s text=%s",
@@ -269,23 +275,32 @@ class AsrSession:
         await self._send_partial(text, speaker)
 
         if endpoint_detected:
-            final_spk, final_sim, cand, topk = self._try_speaker(force=True)
-            self.latest_topk = topk
-            if cand is not None:
-                self.current_speaker_candidate = cand
-                await self._send_speaker_state(cand, final_sim)
-            await self._send_final(
-                text,
-                final_spk,
-                final_sim,
-                topk or self.latest_topk,
-                cand or self.current_speaker_candidate,
-            )
-            self.recognizer.reset(self.stream)
+            final_text = text.strip()
+            if not final_text:
+                self.recognizer.reset(self.stream)
+                self.cur_utt_audio.clear()
+                self._last_partial_text_sent = None
+                self.cur_utt_started_at = time.perf_counter()
+                self.cur_utt_start_sample = self.total_samples_in
+            else:
+                final_spk, final_sim, cand, topk = self._try_speaker(force=True)
+                self.latest_topk = topk
+                if cand is not None:
+                    self.current_speaker_candidate = cand
+                    await self._send_speaker_state(cand, final_sim)
+                await self._send_final(
+                    final_text,
+                    final_spk,
+                    final_sim,
+                    topk or self.latest_topk,
+                    cand or self.current_speaker_candidate,
+                )
+                self._last_partial_text_sent = None
+                self.recognizer.reset(self.stream)
 
     async def handle_done(self):
-        text = self.recognizer.get_result(self.stream)
-        if text.strip():
+        text = self.recognizer.get_result(self.stream).strip()
+        if text:
             final_spk, final_sim, cand, topk = self._try_speaker(force=True)
             self.latest_topk = topk
             if cand is not None:
