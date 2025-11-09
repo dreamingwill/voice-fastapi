@@ -244,19 +244,19 @@ class AsrSession:
         )
         endpoint_detected = self.recognizer.is_endpoint(self.stream)
 
-        logger.info(
-            (
-                "asr.decode session=%s chunk_ms=%s decode_ms=%s decodes=%s "
-                "total_ms=%s endpoint=%s text_len=%s"
-            ),
-            self.ws.scope.get("session_id"),
-            chunk_ms,
-            decode_time_ms,
-            decode_iters,
-            _ms(self.total_samples_in, self.sample_rate_client),
-            endpoint_detected,
-            len(text),
-        )
+        # logger.info(
+        #     (
+        #         "asr.decode session=%s chunk_ms=%s decode_ms=%s decodes=%s "
+        #         "total_ms=%s endpoint=%s text_len=%s"
+        #     ),
+        #     self.ws.scope.get("session_id"),
+        #     chunk_ms,
+        #     decode_time_ms,
+        #     decode_iters,
+        #     _ms(self.total_samples_in, self.sample_rate_client),
+        #     endpoint_detected,
+        #     len(text),
+        # )
 
         if not self.cur_utt_speaker_guess_sent:
             guess, sim, cand, topk = self._try_speaker(force=False)

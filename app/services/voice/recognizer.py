@@ -44,8 +44,10 @@ def create_recognizer(
         rule1_min_trailing_silence=rule1_min_trailing_silence,
         rule2_min_trailing_silence=rule2_min_trailing_silence,
         rule3_min_utterance_length=rule3_min_utterance_length,
+        enable_endpoint_detection=True,
     )
     
+
     logging.getLogger("asr.recognizer").info(
         "rule1_min_trailing_silence=%s, rule2_min_trailing_silence=%s, rule3_min_utterance_length=%s",
         rule1_min_trailing_silence,
