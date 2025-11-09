@@ -127,4 +127,8 @@ def create_app(args):
     app.include_router(status_routes.router)
     app.include_router(ws_routes.router)
 
+    @app.get("/")
+    async def root():
+        return {"status": "ok"}
+
     return app
