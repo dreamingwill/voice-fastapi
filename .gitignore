@@ -4,6 +4,7 @@ app/services/__pycache__/
 app/api/__pycache__
 app/__pycache__
 
-__pycache__/
+# 忽略所有 Python 编译缓存
+**/__pycache__/
 *.py[cod]
 *$py.class
