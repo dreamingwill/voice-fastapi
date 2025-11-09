@@ -31,11 +31,14 @@ def assert_file_exists(filename: str):
         "https://k2-fsa.github.io/sherpa/onnx/pretrained_models/online-paraformer/paraformer-models.html to download it"
     )
 
-
+#   "tokens": "./models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/tokens.txt",
+#   "encoder": "./models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/encoder-epoch-99-avg-1.onnx",
+#   "decoder": "./models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/decoder-epoch-99-avg-1.onnx",
+#   "joiner": "./models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/joiner-epoch-99-avg-1.onnx",
 def create_recognizer():
-    encoder = "./models/sherpa-onnx-streaming-paraformer-bilingual-zh-en/encoder.int8.onnx"
-    decoder = "./models/sherpa-onnx-streaming-paraformer-bilingual-zh-en/decoder.int8.onnx"
-    tokens = "./models/sherpa-onnx-streaming-paraformer-bilingual-zh-en/tokens.txt"
+    encoder = "./models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/encoder-epoch-99-avg-1.onnx"
+    decoder = "./models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/decoder-epoch-99-avg-1.onnx"
+    tokens = "./models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/tokens.txt"
     assert_file_exists(encoder)
     assert_file_exists(decoder)
     assert_file_exists(tokens)
