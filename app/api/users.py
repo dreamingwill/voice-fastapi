@@ -290,10 +290,10 @@ async def aggregate_voiceprint(
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    if len(files) != 3:
+    if len(files) < 1:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Need 3 sound files, but actual {len(files)}",
+            detail="Need at least 1 sound file to aggregate voiceprint",
         )
 
     embedder = request.app.state.embedder

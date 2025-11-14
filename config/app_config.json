@@ -4,12 +4,15 @@
   "model_path": "./models/3dspeaker_speech_eres2net_large_sv_zh-cn_3dspeaker_16k.onnx",
   "sample_rate": 16000,
   "threshold": 0.35,
-  "tokens": "./models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/tokens.txt",
-  "encoder": "./models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/encoder-epoch-99-avg-1.onnx",
-  "decoder": "./models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/decoder-epoch-99-avg-1.onnx",
-  "joiner": "./models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/joiner-epoch-99-avg-1.onnx",
-  "num_threads": 4,
-  "rule1_min_trailing_silence": 2.0,
-  "rule2_min_trailing_silence": 1.0,
-  "rule3_min_utterance_length": 300
+  "provider": "rknn",
+  "blank_penalty": 0,
+  "decoding_method": "greedy_search",
+  "tokens": "./models/sherpa-onnx-rk3588-streaming-zipformer-small-bilingual-zh-en-2023-02-16/tokens.txt",
+  "encoder": "./models/sherpa-onnx-rk3588-streaming-zipformer-small-bilingual-zh-en-2023-02-16/encoder.rknn",
+  "decoder": "./models/sherpa-onnx-rk3588-streaming-zipformer-small-bilingual-zh-en-2023-02-16/decoder.rknn",
+  "joiner": "./models/sherpa-onnx-rk3588-streaming-zipformer-small-bilingual-zh-en-2023-02-16/joiner.rknn",
+  "num_threads": 1,
+  "rule1_min_trailing_silence": 1.2,
+  "rule2_min_trailing_silence": 0.6,
+  "rule3_min_utterance_length": 80
 }
