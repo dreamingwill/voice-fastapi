@@ -7,6 +7,7 @@ import numpy as np
 from fastapi import FastAPI, WebSocket
 
 from ..events import record_event_log
+from ..transcripts import append_transcript_segment, finalize_transcript
 from .recognizer import pcm_bytes_to_float32
 from .speaker import SpeakerCandidate, SpeakerEmbedder, identify_user
 
@@ -53,6 +54,7 @@ class AsrSession:
         self._last_partial_logged_at = 0.0
         self._partial_log_interval = 0.5  # seconds
         self._last_partial_text_sent: Optional[str] = None
+        self.session_id = websocket.scope.get("session_id")
 
     def _concat_cur_utt_audio(self) -> np.ndarray:
         if not self.cur_utt_audio:
@@ -207,6 +209,16 @@ class AsrSession:
             },
         )
 
+        self._persist_transcript_segment(
+            text=final_text,
+            speaker=final_spk,
+            similarity=final_sim,
+            start_ms=_ms(self.cur_utt_start_sample, self.sample_rate_client),
+            end_ms=_ms(self.total_samples_in, self.sample_rate_client),
+            topk=topk or self.latest_topk,
+            candidate=cand or self.current_speaker_candidate,
+        )
+
         metrics = getattr(self.app.state, "session_metrics", None)
         if metrics is not None:
             latency_samples = metrics.setdefault("latency_samples", [])
@@ -221,6 +233,35 @@ class AsrSession:
         self.cur_utt_started_at = time.perf_counter()
         self.latest_topk = []
         self.current_speaker_candidate = None
+
+    def _persist_transcript_segment(
+        self,
+        *,
+        text: str,
+        speaker: str,
+        similarity: float,
+        start_ms: int,
+        end_ms: int,
+        topk: List[SpeakerCandidate],
+        candidate: Optional[SpeakerCandidate],
+    ) -> None:
+        if not self.session_id or not text:
+            return
+
+        append_transcript_segment(
+            session_id=self.session_id,
+            segment_id=self.segment_id,
+            text=text,
+            speaker_name=speaker,
+            speaker_user_id=(candidate or {}).get("id"),
+            similarity=similarity,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            topk=topk,
+            locale=self.session_info.get("locale"),
+            channel=self.session_info.get("channel"),
+            operator=self.session_info.get("operator"),
+        )
 
     async def handle_binary_audio(self, data: bytes):
         chunk_start = time.perf_counter()
@@ -313,6 +354,7 @@ class AsrSession:
                 topk or self.latest_topk,
                 cand or self.current_speaker_candidate,
             )
+        finalize_transcript(session_id=self.session_id, status="completed")
 
     async def handle_text_message(self, raw: str) -> bool:
         text = raw.strip()
@@ -382,6 +424,7 @@ class AsrSession:
             "session_id": session_id,
             "operator": data.get("operator"),
             "locale": data.get("locale", "zh-CN"),
+             "channel": data.get("channel"),
             "token": data.get("token"),
         }
 

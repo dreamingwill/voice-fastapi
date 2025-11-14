@@ -3,6 +3,7 @@ import random
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from ..services.events import record_event_log
+from ..services.transcripts import finalize_transcript
 from ..services.voice import AsrSession
 from ..utils import now_utc
 
@@ -82,6 +83,7 @@ async def ws_identify(websocket: WebSocket):
     finally:
         if metrics is not None:
             metrics["active_sessions"] = max(0, int(metrics.get("active_sessions", 1)) - 1)
+        finalize_transcript(session_id=session_id, status="aborted")
         record_event_log(
             session_id=session_id,
             user_id=None,

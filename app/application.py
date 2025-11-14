@@ -10,6 +10,7 @@ from .api import logs as logs_routes
 from .api import status as status_routes
 from .api import users as users_routes
 from .api import ws as ws_routes
+from .api import transcripts as transcripts_routes
 from .config import DEFAULT_ALLOWED_ORIGINS
 from .database import init_db
 from .services.voice import SpeakerEmbedder, create_recognizer
@@ -125,6 +126,7 @@ def create_app(args):
     app.include_router(users_routes.router)
     app.include_router(logs_routes.router)
     app.include_router(status_routes.router)
+    app.include_router(transcripts_routes.router)
     app.include_router(ws_routes.router)
 
     @app.get("/")

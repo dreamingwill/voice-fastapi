@@ -108,6 +108,50 @@ class MetricsResponse(BaseModel):
     audio_queue_depth: int
 
 
+class TranscriptSegmentResponse(BaseModel):
+    id: int
+    segment_id: int
+    speaker_name: Optional[str] = None
+    speaker_user_id: Optional[int] = None
+    similarity: Optional[float] = None
+    start_ms: Optional[int] = None
+    end_ms: Optional[int] = None
+    text: str
+    topk: Optional[List[Dict[str, Any]]] = None
+    created_at: Optional[str] = None
+
+
+class TranscriptResponse(BaseModel):
+    id: int
+    session_id: str
+    user_id: Optional[int] = None
+    username: Optional[str] = None
+    dominant_speaker: Optional[str] = None
+    speakers: Optional[List[Dict[str, Any]]] = None
+    text: Optional[str] = None
+    duration_ms: Optional[int] = None
+    similarity_avg: Optional[float] = None
+    similarity_max: Optional[float] = None
+    segments_count: int
+    status: str
+    locale: Optional[str] = None
+    channel: Optional[str] = None
+    operator: Optional[str] = None
+    created_at: str
+    updated_at: Optional[str] = None
+
+
+class TranscriptDetailResponse(TranscriptResponse):
+    segments: List[TranscriptSegmentResponse]
+
+
+class TranscriptsResponse(BaseModel):
+    items: List[TranscriptResponse]
+    total: int
+    page: int
+    page_size: int
+
+
 __all__ = [
     "UserCreateAndUpdate",
     "UserResponse",
@@ -123,4 +167,8 @@ __all__ = [
     "LogsResponse",
     "HealthResponse",
     "MetricsResponse",
+    "TranscriptSegmentResponse",
+    "TranscriptResponse",
+    "TranscriptDetailResponse",
+    "TranscriptsResponse",
 ]
