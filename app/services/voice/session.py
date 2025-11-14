@@ -210,13 +210,13 @@ class AsrSession:
         )
 
         self._persist_transcript_segment(
-            text=final_text,
-            speaker=final_spk,
-            similarity=final_sim,
+            text=text,
+            speaker=speaker,
+            similarity=similarity,
             start_ms=_ms(self.cur_utt_start_sample, self.sample_rate_client),
             end_ms=_ms(self.total_samples_in, self.sample_rate_client),
-            topk=topk or self.latest_topk,
-            candidate=cand or self.current_speaker_candidate,
+            topk=topk,
+            candidate=candidate,
         )
 
         metrics = getattr(self.app.state, "session_metrics", None)
