@@ -118,6 +118,17 @@ class AsrSession:
     async def _send_meta(self, data: Dict[str, Any]):
         await self.ws.send_json({"type": "meta", "data": data})
 
+    def _get_operator_label(self) -> Optional[str]:
+        operator = self.session_info.get("operator")
+        if isinstance(operator, dict):
+            return operator.get("name") or operator.get("username") or (
+                str(operator.get("id")) if operator.get("id") is not None else None
+            )
+        if isinstance(operator, str):
+            cleaned = operator.strip()
+            return cleaned or None
+        return None
+
     def _should_log_partial(self, text: str) -> bool:
         if text == self._last_partial_text_sent:
             return False
@@ -260,7 +271,7 @@ class AsrSession:
             topk=topk,
             locale=self.session_info.get("locale"),
             channel=self.session_info.get("channel"),
-            operator=self.session_info.get("operator"),
+            operator=self._get_operator_label(),
         )
 
     async def handle_binary_audio(self, data: bytes):
@@ -452,9 +463,7 @@ class AsrSession:
             session_id=session_id,
             user_id=None,
             username=None,
-            operator=(self.session_info.get("operator") or {}).get("name")
-            if isinstance(self.session_info.get("operator"), dict)
-            else None,
+            operator=self._get_operator_label(),
             event_type="session",
             category="audio_start",
             authorized=True,
