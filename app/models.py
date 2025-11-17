@@ -1,4 +1,16 @@
-from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    LargeBinary,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 
 from .database import Base
 
@@ -101,4 +113,45 @@ class TranscriptSegment(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
-__all__ = ["User", "AdminAccount", "EventLog", "Transcript", "TranscriptSegment"]
+class Command(Base):
+    __tablename__ = "commands"
+    __table_args__ = (UniqueConstraint("user_id", "text", name="uix_commands_user_text"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    text = Column(Text, nullable=False)
+    embedding = Column(LargeBinary, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        index=True,
+    )
+
+
+class CommandSettings(Base):
+    __tablename__ = "command_settings"
+    __table_args__ = (UniqueConstraint("user_id", name="uix_command_settings_user"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    enable_matching = Column(Boolean, nullable=False, default=False)
+    match_threshold = Column(Float, nullable=True)
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        index=True,
+    )
+
+
+__all__ = [
+    "User",
+    "AdminAccount",
+    "EventLog",
+    "Transcript",
+    "TranscriptSegment",
+    "Command",
+    "CommandSettings",
+]

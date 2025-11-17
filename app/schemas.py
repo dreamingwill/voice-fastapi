@@ -152,6 +152,29 @@ class TranscriptsResponse(BaseModel):
     page_size: int
 
 
+class CommandUploadRequest(BaseModel):
+    commands: List[str]
+
+
+class CommandToggleRequest(BaseModel):
+    enabled: bool
+    match_threshold: Optional[float] = None
+
+
+class CommandItem(BaseModel):
+    id: int
+    text: str
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class CommandListResponse(BaseModel):
+    enabled: bool
+    match_threshold: Optional[float] = None
+    commands: List[CommandItem]
+    updated_at: Optional[str] = None
+
+
 __all__ = [
     "UserCreateAndUpdate",
     "UserResponse",
@@ -171,4 +194,8 @@ __all__ = [
     "TranscriptResponse",
     "TranscriptDetailResponse",
     "TranscriptsResponse",
+    "CommandUploadRequest",
+    "CommandToggleRequest",
+    "CommandItem",
+    "CommandListResponse",
 ]

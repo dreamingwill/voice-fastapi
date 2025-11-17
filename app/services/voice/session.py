@@ -4,10 +4,12 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, HTTPException, WebSocket
 
 from ..events import record_event_log
 from ..transcripts import append_transcript_segment, finalize_transcript
+from ...auth import validate_access_token
+from ..commands import get_command_service
 from .recognizer import pcm_bytes_to_float32
 from .speaker import SpeakerCandidate, SpeakerEmbedder, identify_user
 
@@ -56,6 +58,10 @@ class AsrSession:
         self._last_partial_text_sent: Optional[str] = None
         self.session_id = websocket.scope.get("session_id")
         self._last_speaker_eval_latency_ms: Optional[int] = None
+        self.command_service = get_command_service()
+        self.command_user_id: Optional[int] = None
+        self.command_matching_enabled = False
+        self.command_match_threshold: Optional[float] = None
 
     def _concat_cur_utt_audio(self) -> np.ndarray:
         if not self.cur_utt_audio:
@@ -183,6 +189,7 @@ class AsrSession:
             if item.get("username")
         ]
         latency_ms = int((time.perf_counter() - self.cur_utt_started_at) * 1000)
+        command_match = self._evaluate_command_match(text)
         await self.ws.send_json(
             {
                 "type": "final",
@@ -193,6 +200,7 @@ class AsrSession:
                 "speaker": speaker,
                 "similarity": similarity,
                 "topk": meta_topk,
+                "command_match": command_match,
             }
         )
         logger.info(
@@ -223,6 +231,7 @@ class AsrSession:
                 "start_ms": _ms(self.cur_utt_start_sample, self.sample_rate_client),
                 "end_ms": _ms(self.total_samples_in, self.sample_rate_client),
                 "topk": meta_topk,
+                "command_match": command_match,
             },
         )
 
@@ -441,9 +450,10 @@ class AsrSession:
             "session_id": session_id,
             "operator": data.get("operator"),
             "locale": data.get("locale", "zh-CN"),
-             "channel": data.get("channel"),
+            "channel": data.get("channel"),
             "token": data.get("token"),
         }
+        await self._initialize_command_matching(data.get("token"))
 
         logger.info(
             "audio.start session=%s sample_rate=%s format=%s channels=%s operator=%s",
@@ -462,6 +472,8 @@ class AsrSession:
                 "model": getattr(self.args, "tokens", None),
                 "speakerModel": getattr(self.embedder, "model_path", None),
                 "heartbeatInterval": 20000,
+                "commandMatchingEnabled": self.command_matching_enabled,
+                "commandMatchThreshold": self.command_match_threshold,
             }
         )
 
@@ -478,8 +490,55 @@ class AsrSession:
                 "format": fmt,
                 "channels": channels,
                 "locale": self.session_info.get("locale"),
+                "command_matching_enabled": self.command_matching_enabled,
             },
         )
+
+    async def _initialize_command_matching(self, token: Optional[str]):
+        self.command_user_id = None
+        self.command_matching_enabled = False
+        self.command_match_threshold = None
+
+        if not token:
+            return
+        try:
+            user_payload = await validate_access_token(token)
+        except HTTPException as exc:
+            detail = getattr(exc, "detail", str(exc))
+            logger.warning("command.match auth_failed error=%s", detail)
+            return
+
+        settings = self.command_service.get_settings(user_payload.id)
+        self.command_user_id = user_payload.id
+        self.command_matching_enabled = bool(settings.enable_matching)
+        self.command_match_threshold = settings.match_threshold or self.command_service.default_threshold
+
+    def _evaluate_command_match(self, text: str) -> Dict[str, Any]:
+        if not self.command_user_id:
+            return {"matched": False}
+        try:
+            settings = self.command_service.get_settings(self.command_user_id)
+            self.command_matching_enabled = bool(settings.enable_matching)
+            self.command_match_threshold = settings.match_threshold or self.command_service.default_threshold
+            if not settings.enable_matching:
+                return {"matched": False}
+            result = self.command_service.match_command(
+                self.command_user_id,
+                text,
+                threshold_override=self.command_match_threshold,
+                settings=settings,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.error("command.match failed error=%s", exc, exc_info=True)
+            return {"matched": False}
+
+        payload: Dict[str, Any] = {"matched": bool(result.matched)}
+        if result.matched:
+            payload["command"] = result.command
+            payload["score"] = result.score
+        else:
+            payload["score"] = result.score
+        return payload
 
 
 __all__ = ["AsrSession"]
