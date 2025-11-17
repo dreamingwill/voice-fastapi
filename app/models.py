@@ -13,6 +13,7 @@ from sqlalchemy import (
 )
 
 from .database import Base
+from .utils import now_utc
 
 
 class User(Base):
@@ -121,11 +122,17 @@ class Command(Base):
     user_id = Column(Integer, nullable=False, index=True)
     text = Column(Text, nullable=False)
     embedding = Column(LargeBinary, nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        default=now_utc,
+        server_default=func.now(),
+        index=True,
+    )
     updated_at = Column(
         DateTime(timezone=True),
+        default=now_utc,
         server_default=func.now(),
-        onupdate=func.now(),
+        onupdate=now_utc,
         index=True,
     )
 
@@ -140,8 +147,9 @@ class CommandSettings(Base):
     match_threshold = Column(Float, nullable=True)
     updated_at = Column(
         DateTime(timezone=True),
+        default=now_utc,
         server_default=func.now(),
-        onupdate=func.now(),
+        onupdate=now_utc,
         index=True,
     )
 

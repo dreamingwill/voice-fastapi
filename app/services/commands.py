@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from ..database import SessionLocal
 from ..models import Command, CommandSettings
+from ..utils import to_iso
 
 DEFAULT_MATCH_THRESHOLD = float(os.getenv("COMMAND_MATCH_THRESHOLD", "0.75"))
 
@@ -150,7 +151,7 @@ class CommandService:
         settings = self.get_settings(user_id)
 
         def _ts(value):
-            return value.isoformat() if value else None
+            return to_iso(value) if value else None
 
         return {
             "enabled": bool(settings.enable_matching),
@@ -223,7 +224,7 @@ class CommandService:
             )
 
         def _ts(value):
-            return value.isoformat() if value else None
+            return to_iso(value) if value else None
 
         return {
             "items": [
@@ -304,7 +305,7 @@ class CommandService:
         self._matcher.invalidate(user_id)
 
         def _ts(value):
-            return value.isoformat() if value else None
+            return to_iso(value) if value else None
 
         return {
             "id": command.id,
