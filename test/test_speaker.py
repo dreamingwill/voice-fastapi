@@ -4,7 +4,7 @@ Utility script for validating the speaker embedding model without running FastAP
 
 Example:
     python test/test_speaker.py \
-        --audio /path/to/sample.wav \
+        --audio tmp/zrh_voice.wav \
         --config config/app_config.json
 """
 

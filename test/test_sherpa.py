@@ -2,7 +2,7 @@
 Local microphone streaming test without FastAPI.
 
 Usage:
-    python test/ws_test_no_port.py \
+    python test/test_sherpa.py \
         --tokens ./models/.../tokens.txt \
         --encoder ./models/.../encoder.onnx \
         --decoder ./models/.../decoder.onnx \
@@ -22,7 +22,7 @@ import numpy as np
 import sherpa_onnx
 import sounddevice as sd
 
-DEFAULT_CONFIG = Path("config/app_config_test.json")
+DEFAULT_CONFIG = Path("config/app_config.json")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -178,10 +178,10 @@ def main():
         rule2_min_trailing_silence=args.rule2,
         rule3_min_utterance_length=args.rule3,
         enable_endpoint_detection=True,
-        hotwords_file="./models/hotwords_test.txt",
-        hotwords_score=2.0,
-        modeling_unit="cjkchar+bpe",
-        bpe_vocab="./models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/bpe.vocab",
+        # hotwords_file="./models/hotwords_test.txt",
+        # hotwords_score=2.0,
+        # modeling_unit="cjkchar+bpe",
+        # bpe_vocab="./models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/bpe.vocab",
     )
 
     stream = recognizer.create_stream()
