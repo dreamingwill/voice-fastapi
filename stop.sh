@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-PROJECT_DIR="/home/orangepi/projects/voice/voice-fastapi"
+PROJECT_DIR="/home/orangepi/projects/voice/voice-fastapi-dev"
 PROCESS_PATTERN="python main.py"
 cd "$PROJECT_DIR"
 
