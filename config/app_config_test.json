@@ -1,0 +1,20 @@
+{
+  "host": "0.0.0.0",
+  "port": 8000,
+  "model_path": "./models/3dspeaker_speech_eres2net_large_sv_zh-cn_3dspeaker_16k.onnx",
+  "sample_rate": 16000,
+  "threshold": 0.35,
+  "provider": "cpu",
+  "blank_penalty": 0,
+  "decoding_method": "modified_beam_search",
+  "tokens": "./models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/tokens.txt",
+  "encoder": "./models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/encoder-epoch-99-avg-1.onnx",
+  "decoder": "./models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/decoder-epoch-99-avg-1.onnx",
+  "joiner": "./models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/joiner-epoch-99-avg-1.onnx",
+  "hotwords_file":"./models/hotwords_test.txt",
+  "hotwords_score":2.0,
+  "num_threads": 1,
+  "rule1_min_trailing_silence": 1.2,
+  "rule2_min_trailing_silence": 0.8,
+  "rule3_min_utterance_length": 80
+}

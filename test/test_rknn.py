@@ -22,7 +22,7 @@ import numpy as np
 import sherpa_onnx
 import sounddevice as sd
 
-DEFAULT_CONFIG = Path("config/app_config_test.json")
+DEFAULT_CONFIG = Path("config/app_config_test_rknn.json")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -33,7 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--joiner", help="Joiner ONNX")
     parser.add_argument("--sample-rate", type=int, default=16000, help="Microphone sample rate")
     parser.add_argument("--feature-dim", type=int, default=80)
-    parser.add_argument("--decoding-method", default="greedy_search")
+    parser.add_argument("--decoding-method", default="modified_beam_search")
     parser.add_argument("--max-active-paths", type=int, default=4)
     parser.add_argument("--provider", default="cpu")
     parser.add_argument("--num-threads", type=int, default=4)
@@ -173,6 +173,8 @@ def main():
         feature_dim=args.feature_dim,
         decoding_method=args.decoding_method,
         max_active_paths=args.max_active_paths,
+        hotwords_file=args.hotwords_file,
+        hotwords_score=args.hotwords_score,
         provider=args.provider,
         rule1_min_trailing_silence=args.rule1,
         rule2_min_trailing_silence=args.rule2,
