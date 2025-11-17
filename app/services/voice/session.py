@@ -76,9 +76,9 @@ class AsrSession:
         need_len = int(self.args.min_spk_seconds * self.sample_rate_client)
         if (not force) and (buf.size < need_len):
             return "unknown", 0.0, None, []
-
-        st = self.embedder.create_stream()
+        
         eval_start = time.perf_counter()
+        st = self.embedder.create_stream()
         st.accept_waveform(sample_rate=self.sample_rate_client, waveform=buf)
         if force:
             st.input_finished()
