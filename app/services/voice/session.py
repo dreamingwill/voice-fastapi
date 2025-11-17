@@ -55,6 +55,7 @@ class AsrSession:
         self._partial_log_interval = 0.5  # seconds
         self._last_partial_text_sent: Optional[str] = None
         self.session_id = websocket.scope.get("session_id")
+        self._last_speaker_eval_latency_ms: Optional[int] = None
 
     def _concat_cur_utt_audio(self) -> np.ndarray:
         if not self.cur_utt_audio:
@@ -64,12 +65,14 @@ class AsrSession:
     def _try_speaker(
         self, force: bool = False
     ) -> Tuple[str, float, Optional[SpeakerCandidate], List[SpeakerCandidate]]:
+        self._last_speaker_eval_latency_ms = None
         buf = self._concat_cur_utt_audio()
         need_len = int(self.args.min_spk_seconds * self.sample_rate_client)
         if (not force) and (buf.size < need_len):
             return "unknown", 0.0, None, []
 
         st = self.embedder.create_stream()
+        eval_start = time.perf_counter()
         st.accept_waveform(sample_rate=self.sample_rate_client, waveform=buf)
         if force:
             st.input_finished()
@@ -79,6 +82,7 @@ class AsrSession:
         emb = np.asarray(emb, dtype=np.float32)
 
         matched, top_sim, topk = identify_user(emb, threshold=self.args.threshold)
+        self._last_speaker_eval_latency_ms = int((time.perf_counter() - eval_start) * 1000)
 
         if force:
             metrics = getattr(self.app.state, "session_metrics", None)
@@ -95,13 +99,15 @@ class AsrSession:
         return matched["username"], float(top_sim), matched, topk
 
     async def _send_speaker_state(self, candidate: SpeakerCandidate, similarity: float):
+        latency_ms = self._last_speaker_eval_latency_ms
         logger.info(
-            "speaker.update session=%s id=%s username=%s role=%s confidence=%.3f",
+            "speaker.update session=%s id=%s username=%s role=%s confidence=%.3f latency_ms=%s",
             self.ws.scope.get("session_id"),
             candidate.get("id"),
             candidate.get("username"),
             candidate.get("identity"),
             similarity,
+            latency_ms if latency_ms is not None else "n/a",
         )
         payload = {
             "type": "speaker",
