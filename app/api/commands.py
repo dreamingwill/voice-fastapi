@@ -53,12 +53,13 @@ async def toggle_command_matching(
 @router.get("/search", response_model=CommandSearchResponse, status_code=status.HTTP_200_OK)
 async def search_commands(
     q: str = Query(..., min_length=1),
-    limit: int = Query(20, ge=1, le=200),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
     user: TokenPayload = Depends(require_admin),
 ):
     service = get_command_service()
-    items = service.search_commands(user.id, q, limit=limit)
-    return CommandSearchResponse(items=items)
+    payload = service.search_commands(user.id, q, page=page, page_size=page_size)
+    return CommandSearchResponse(**payload)
 
 
 @router.delete("/{command_id}", status_code=status.HTTP_200_OK)

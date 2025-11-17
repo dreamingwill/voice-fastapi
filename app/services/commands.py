@@ -196,29 +196,44 @@ class CommandService:
         self._matcher.invalidate(user_id)
         return len(normalized)
 
-    def search_commands(self, user_id: int, keyword: str, *, limit: int = 20) -> List[Dict[str, object]]:
+    def search_commands(
+        self,
+        user_id: int,
+        keyword: str,
+        *,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> Dict[str, object]:
         query = (keyword or "").strip()
         if not query:
-            return []
-        limit = max(1, min(int(limit), 200))
+            return {"items": [], "total": 0, "page": 1, "page_size": page_size}
+        page = max(1, int(page))
+        page_size = max(1, min(int(page_size), 200))
         like_pattern = f"%{query}%"
         with self._get_session() as db:
-            rows: List[Command] = (
+            base_query = (
                 db.query(Command)
                 .filter(Command.user_id == user_id)
                 .filter(Command.text.like(like_pattern))
                 .order_by(Command.created_at.asc(), Command.id.asc())
-                .limit(limit)
-                .all()
+            )
+            total = base_query.count()
+            rows: List[Command] = (
+                base_query.offset((page - 1) * page_size).limit(page_size).all()
             )
 
         def _ts(value):
             return value.isoformat() if value else None
 
-        return [
-            {"id": row.id, "text": row.text, "created_at": _ts(row.created_at), "updated_at": _ts(row.updated_at)}
-            for row in rows
-        ]
+        return {
+            "items": [
+                {"id": row.id, "text": row.text, "created_at": _ts(row.created_at), "updated_at": _ts(row.updated_at)}
+                for row in rows
+            ],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+        }
 
     def update_matching_state(
         self,

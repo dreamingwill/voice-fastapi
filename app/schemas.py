@@ -180,6 +180,9 @@ class CommandListResponse(BaseModel):
 
 class CommandSearchResponse(BaseModel):
     items: List[CommandItem]
+    total: int
+    page: int
+    page_size: int
 
 
 class CommandUpdateRequest(BaseModel):

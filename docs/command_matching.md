@@ -59,8 +59,8 @@
 - 用于前端分页展示指令列表。
 
 ### `GET /api/commands/search`
-- Query：`q`（关键词，必填）、`limit`（默认 20，最大 200）
-- 返回模糊匹配的指令数组 `items`，用于前端局部搜索或自动补全。
+- Query：`q`（关键词，必填）、`page`（默认 1）、`page_size`（默认 20，最大 200）
+- 响应：`{ "items": [...], "total": 5, "page": 1, "page_size": 20 }`，可用于模糊查询的分页展示或搜索结果列表。
 
 ### `PUT /api/commands/{command_id}`
 - Body：`{ "text": "新的指令内容" }`
