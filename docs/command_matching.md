@@ -40,19 +40,34 @@
 - 响应：返回最新 `GET /api/commands` 同结构
 
 ### `GET /api/commands`
+- Query：`page`（默认 1）、`page_size`（默认 20，最大 200）
 - 响应示例：
   ```json
   {
     "enabled": true,
     "match_threshold": 0.75,
-    "commands": [
-      {"id": 1, "text": "各号注意..."},
-      {"id": 2, "text": "站综合信息检查..."}
+    "items": [
+      {"id": 1, "text": "各号注意...", "created_at": "..."},
+      {"id": 2, "text": "站综合信息检查...", "created_at": "..."}
     ],
+    "total": 42,
+    "page": 1,
+    "page_size": 20,
     "updated_at": "2024-01-01T12:00:00Z"
   }
   ```
-- 用于前端显示当前指令列表和开关状态。
+- 用于前端分页展示指令列表。
+
+### `GET /api/commands/search`
+- Query：`q`（关键词，必填）、`limit`（默认 20，最大 200）
+- 返回模糊匹配的指令数组 `items`，用于前端局部搜索或自动补全。
+
+### `PUT /api/commands/{command_id}`
+- Body：`{ "text": "新的指令内容" }`
+- 行为：更新指令文本并重新写入 embedding；若文本重复或记录不存在返回 400/404。
+
+### `DELETE /api/commands/{command_id}`
+- 删除指定指令；成功返回 `{ "deleted": true }`。
 
 ## WebSocket 交互
 - ASR 产生每个 segment 时读取用户的 `enable_matching`：

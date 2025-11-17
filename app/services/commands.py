@@ -134,13 +134,18 @@ class CommandService:
             db.refresh(settings)
             return settings
 
-    def list_commands(self, user_id: int) -> Dict[str, object]:
+    def list_commands(self, user_id: int, *, page: int = 1, page_size: int = 20) -> Dict[str, object]:
+        page = max(1, int(page))
+        page_size = max(1, min(int(page_size), 200))
         with self._get_session() as db:
-            commands: List[Command] = (
+            base_query = (
                 db.query(Command)
                 .filter(Command.user_id == user_id)
                 .order_by(Command.created_at.asc(), Command.id.asc())
-                .all()
+            )
+            total = base_query.count()
+            commands: List[Command] = (
+                base_query.offset((page - 1) * page_size).limit(page_size).all()
             )
         settings = self.get_settings(user_id)
 
@@ -150,7 +155,7 @@ class CommandService:
         return {
             "enabled": bool(settings.enable_matching),
             "match_threshold": settings.match_threshold or self.default_threshold,
-            "commands": [
+            "items": [
                 {
                     "id": cmd.id,
                     "text": cmd.text,
@@ -159,6 +164,9 @@ class CommandService:
                 }
                 for cmd in commands
             ],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
             "updated_at": _ts(settings.updated_at),
         }
 
@@ -188,6 +196,30 @@ class CommandService:
         self._matcher.invalidate(user_id)
         return len(normalized)
 
+    def search_commands(self, user_id: int, keyword: str, *, limit: int = 20) -> List[Dict[str, object]]:
+        query = (keyword or "").strip()
+        if not query:
+            return []
+        limit = max(1, min(int(limit), 200))
+        like_pattern = f"%{query}%"
+        with self._get_session() as db:
+            rows: List[Command] = (
+                db.query(Command)
+                .filter(Command.user_id == user_id)
+                .filter(Command.text.like(like_pattern))
+                .order_by(Command.created_at.asc(), Command.id.asc())
+                .limit(limit)
+                .all()
+            )
+
+        def _ts(value):
+            return value.isoformat() if value else None
+
+        return [
+            {"id": row.id, "text": row.text, "created_at": _ts(row.created_at), "updated_at": _ts(row.updated_at)}
+            for row in rows
+        ]
+
     def update_matching_state(
         self,
         user_id: int,
@@ -215,6 +247,56 @@ class CommandService:
             db.commit()
             db.refresh(settings)
         return settings
+
+    def delete_command(self, user_id: int, command_id: int) -> bool:
+        with self._get_session() as db:
+            command = (
+                db.query(Command)
+                .filter(Command.user_id == user_id, Command.id == command_id)
+                .one_or_none()
+            )
+            if not command:
+                return False
+            db.delete(command)
+            db.commit()
+        self._matcher.invalidate(user_id)
+        return True
+
+    def update_command(self, user_id: int, command_id: int, text: str) -> Dict[str, object]:
+        new_text = (text or "").strip()
+        if not new_text:
+            raise ValueError("Command text cannot be empty")
+        with self._get_session() as db:
+            command = (
+                db.query(Command)
+                .filter(Command.user_id == user_id, Command.id == command_id)
+                .one_or_none()
+            )
+            if not command:
+                raise ValueError("Command not found")
+            duplicate = (
+                db.query(Command)
+                .filter(Command.user_id == user_id, Command.text == new_text, Command.id != command_id)
+                .first()
+            )
+            if duplicate:
+                raise ValueError("Command text already exists")
+            vector = self._embedding.encode([new_text])[0]
+            command.text = new_text
+            command.embedding = vector.tobytes()
+            db.commit()
+            db.refresh(command)
+        self._matcher.invalidate(user_id)
+
+        def _ts(value):
+            return value.isoformat() if value else None
+
+        return {
+            "id": command.id,
+            "text": command.text,
+            "created_at": _ts(command.created_at),
+            "updated_at": _ts(command.updated_at),
+        }
 
     def match_command(
         self,

@@ -171,8 +171,19 @@ class CommandItem(BaseModel):
 class CommandListResponse(BaseModel):
     enabled: bool
     match_threshold: Optional[float] = None
-    commands: List[CommandItem]
+    items: List[CommandItem]
+    total: int
+    page: int
+    page_size: int
     updated_at: Optional[str] = None
+
+
+class CommandSearchResponse(BaseModel):
+    items: List[CommandItem]
+
+
+class CommandUpdateRequest(BaseModel):
+    text: str
 
 
 __all__ = [
@@ -198,4 +209,6 @@ __all__ = [
     "CommandToggleRequest",
     "CommandItem",
     "CommandListResponse",
+    "CommandSearchResponse",
+    "CommandUpdateRequest",
 ]
