@@ -5,10 +5,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from fastapi import FastAPI, HTTPException, WebSocket
+from pydantic import ValidationError
 
 from ..events import record_event_log
 from ..transcripts import append_transcript_segment, finalize_transcript
 from ...auth import validate_access_token
+from ..audio_enhancement import AudioEnhancementPipeline, EnhancementConfig
 from ..commands import get_command_service
 from .recognizer import pcm_bytes_to_float32
 from .speaker import SpeakerCandidate, SpeakerEmbedder, identify_user
@@ -64,6 +66,8 @@ class AsrSession:
         self.command_user_id: Optional[int] = None
         self.command_matching_enabled = False
         self.command_match_threshold: Optional[float] = None
+        self.enhancement_pipeline: Optional[AudioEnhancementPipeline] = getattr(app.state, "enhancement_pipeline", None)
+        self.enhancement_config = EnhancementConfig()
 
     def _concat_cur_utt_audio(self) -> np.ndarray:
         if not self.cur_utt_audio:
@@ -133,6 +137,31 @@ class AsrSession:
 
     async def _send_meta(self, data: Dict[str, Any]):
         await self.ws.send_json({"type": "meta", "data": data})
+
+    def _apply_enhancement_preferences(self, payload: Dict[str, Any]) -> None:
+        enhancement_payload = payload.get("enhancement") or {}
+
+        def _read(keys, default=None):
+            for key in keys:
+                if key in enhancement_payload and enhancement_payload[key] is not None:
+                    return enhancement_payload[key]
+                if key in payload and payload[key] is not None:
+                    return payload[key]
+            return default
+
+        cfg_data = {
+            "noise_mode": (_read(["noiseMode", "noise_mode"], "none") or "none").lower(),
+            "noise_strength": _read(["noiseStrength", "noise_strength"], 1.0),
+            "enable_dereverb": bool(_read(["enableDereverb", "enable_dereverb"], False)),
+            "dereverb_delay": _read(["dereverbDelay", "dereverb_delay"], self.enhancement_config.dereverb_delay),
+            "dereverb_taps": _read(["dereverbTaps", "dereverb_taps"], self.enhancement_config.dereverb_taps),
+            "dereverb_iterations": _read(
+                ["dereverbIterations", "dereverb_iterations"],
+                self.enhancement_config.dereverb_iterations,
+            ),
+        }
+
+        self.enhancement_config = EnhancementConfig(**cfg_data)
 
     def _get_operator_label(self) -> Optional[str]:
         operator = self.session_info.get("operator")
@@ -296,6 +325,8 @@ class AsrSession:
     async def handle_binary_audio(self, data: bytes):
         chunk_start = time.perf_counter()
         samples = pcm_bytes_to_float32(data, self.dtype_hint)
+        if self.enhancement_pipeline is not None and not self.enhancement_config.is_passthrough:
+            samples = self.enhancement_pipeline.process(samples, self.sample_rate_client, self.enhancement_config)
         self.total_samples_in += samples.size
         self.cur_utt_audio.append(samples)
         metrics = getattr(self.app.state, "session_metrics", None)
@@ -456,6 +487,19 @@ class AsrSession:
             )
             return
 
+        try:
+            self._apply_enhancement_preferences(data)
+        except ValidationError as exc:
+            await self.ws.send_json(
+                {
+                    "type": "error",
+                    "code": "INVALID_ENHANCEMENT_CONFIG",
+                    "message": "Invalid enhancement settings",
+                    "details": exc.errors(),
+                }
+            )
+            return
+
         self.sample_rate_client = sample_rate
         self.dtype_hint = "int16" if fmt.startswith("PCM16") else "float32"
         self.handshake_received = True
@@ -489,6 +533,7 @@ class AsrSession:
                 "commandMatchingEnabled": self.command_matching_enabled,
                 "commandMatchThreshold": self.command_match_threshold,
                 "speakerRecognitionEnabled": self.speaker_recognition_enabled,
+                "enhancement": self.enhancement_config.export_metadata(),
             }
         )
 

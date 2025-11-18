@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .api import auth as auth_routes
+from .api import enhancement as enhancement_routes
 from .api import logs as logs_routes
 from .api import settings as settings_routes
 from .api import status as status_routes
@@ -16,6 +17,7 @@ from .api import commands as command_routes
 from .config import DEFAULT_ALLOWED_ORIGINS
 from .database import SessionLocal, init_db
 from .services.settings import load_system_settings_snapshot
+from .services.audio_enhancement import AudioEnhancementPipeline
 from .services.voice import SpeakerEmbedder, create_recognizer
 from .utils import now_utc
 
@@ -46,6 +48,7 @@ def create_app(args):
             "undetermined_count": 0,
             "audio_queue_depth": 0,
         }
+        app.state.enhancement_pipeline = AudioEnhancementPipeline()
         with SessionLocal() as db:
             app.state.system_settings = load_system_settings_snapshot(db)
 
@@ -116,6 +119,7 @@ def create_app(args):
         finally:
             app.state.recognizer = None
             app.state.embedder = None
+            app.state.enhancement_pipeline = None
 
     app = FastAPI(lifespan=lifespan)
 
@@ -134,6 +138,7 @@ def create_app(args):
     app.include_router(transcripts_routes.router)
     app.include_router(command_routes.router)
     app.include_router(settings_routes.router)
+    app.include_router(enhancement_routes.router)
     app.include_router(ws_routes.router)
 
     @app.get("/")
