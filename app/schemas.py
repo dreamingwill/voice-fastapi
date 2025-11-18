@@ -165,6 +165,7 @@ class CommandToggleRequest(BaseModel):
 class CommandItem(BaseModel):
     id: int
     text: str
+    status: str
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -188,6 +189,10 @@ class CommandSearchResponse(BaseModel):
 
 class CommandUpdateRequest(BaseModel):
     text: str
+
+
+class CommandStatusUpdateRequest(BaseModel):
+    status: str
 
 
 class SystemSettingsResponse(BaseModel):
@@ -223,6 +228,7 @@ __all__ = [
     "CommandListResponse",
     "CommandSearchResponse",
     "CommandUpdateRequest",
+    "CommandStatusUpdateRequest",
     "SystemSettingsResponse",
     "SystemSettingsUpdate",
 ]

@@ -41,6 +41,11 @@ def _resolve_backend(choice: Optional[str]) -> str:
     return DEFAULT_MATCH_BACKEND
 
 
+COMMAND_STATUS_ENABLED = "enabled"
+COMMAND_STATUS_DISABLED = "disabled"
+_VALID_COMMAND_STATUSES = {COMMAND_STATUS_ENABLED, COMMAND_STATUS_DISABLED}
+
+
 def _default_model_path() -> str:
     env_path = os.getenv("COMMAND_MODEL_PATH")
     if env_path:
@@ -69,6 +74,13 @@ def _normalize_commands(commands: Sequence[str]) -> List[str]:
 def _normalize_for_matching(text: str) -> str:
     # casefold handles uppercase English without affecting Chinese characters
     return (text or "").strip().casefold()
+
+
+def _normalize_status(value: str) -> str:
+    normalized = (value or "").strip().lower()
+    if normalized not in _VALID_COMMAND_STATUSES:
+        raise ValueError("Invalid command status")
+    return normalized
 
 
 def _tokenize(text: str) -> List[str]:
@@ -178,6 +190,7 @@ class CommandMatcher:
             rows: List[Command] = (
                 db.query(Command)
                 .filter(Command.user_id == user_id)
+                .filter(Command.status == COMMAND_STATUS_ENABLED)
                 .order_by(Command.created_at.asc(), Command.id.asc())
                 .all()
             )
@@ -264,6 +277,7 @@ class CommandService:
                 {
                     "id": cmd.id,
                     "text": cmd.text,
+                    "status": cmd.status,
                     "created_at": _ts(cmd.created_at),
                     "updated_at": _ts(cmd.updated_at),
                 }
@@ -301,6 +315,7 @@ class CommandService:
                         Command(
                             user_id=user_id,
                             text=text,
+                            status=COMMAND_STATUS_ENABLED,
                             embedding=embedding_bytes,
                         )
                     )
@@ -339,7 +354,13 @@ class CommandService:
 
         return {
             "items": [
-                {"id": row.id, "text": row.text, "created_at": _ts(row.created_at), "updated_at": _ts(row.updated_at)}
+                {
+                    "id": row.id,
+                    "text": row.text,
+                    "status": row.status,
+                    "created_at": _ts(row.created_at),
+                    "updated_at": _ts(row.updated_at),
+                }
                 for row in rows
             ],
             "total": total,
@@ -426,6 +447,33 @@ class CommandService:
         return {
             "id": command.id,
             "text": command.text,
+            "status": command.status,
+            "created_at": _ts(command.created_at),
+            "updated_at": _ts(command.updated_at),
+        }
+
+    def update_command_status(self, user_id: int, command_id: int, status: str) -> Dict[str, object]:
+        new_status = _normalize_status(status)
+        with self._get_session() as db:
+            command = (
+                db.query(Command)
+                .filter(Command.user_id == user_id, Command.id == command_id)
+                .one_or_none()
+            )
+            if not command:
+                raise ValueError("Command not found")
+            command.status = new_status
+            db.commit()
+            db.refresh(command)
+        self._matcher.invalidate(user_id)
+
+        def _ts(value):
+            return to_iso(value) if value else None
+
+        return {
+            "id": command.id,
+            "text": command.text,
+            "status": command.status,
             "created_at": _ts(command.created_at),
             "updated_at": _ts(command.updated_at),
         }

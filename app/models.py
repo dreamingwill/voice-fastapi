@@ -121,6 +121,7 @@ class Command(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, nullable=False, index=True)
     text = Column(Text, nullable=False)
+    status = Column(String, nullable=False, default="enabled", server_default="enabled")
     embedding = Column(LargeBinary, nullable=False)
     created_at = Column(
         DateTime(timezone=True),

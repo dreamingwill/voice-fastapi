@@ -8,6 +8,7 @@ from ..schemas import (
     CommandUploadRequest,
     CommandUpdateRequest,
     CommandItem,
+    CommandStatusUpdateRequest,
 )
 from ..services.commands import get_command_service
 
@@ -69,6 +70,23 @@ async def delete_command(command_id: int, user: TokenPayload = Depends(require_a
     if not success:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Command not found")
     return {"deleted": True}
+
+
+@router.patch("/{command_id}/status", response_model=CommandItem, status_code=status.HTTP_200_OK)
+async def update_command_status(
+    command_id: int,
+    payload: CommandStatusUpdateRequest,
+    user: TokenPayload = Depends(require_admin),
+):
+    service = get_command_service()
+    try:
+        updated = service.update_command_status(user.id, command_id, payload.status)
+    except ValueError as exc:
+        msg = str(exc)
+        if msg == "Command not found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=msg) from exc
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg) from exc
+    return CommandItem(**updated)
 
 
 @router.put("/{command_id}", response_model=CommandItem, status_code=status.HTTP_200_OK)

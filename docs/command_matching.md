@@ -16,6 +16,7 @@
 | `id` | INTEGER PK | 自增主键 |
 | `user_id` | INTEGER | 指令所有者（使用开关的帐号）。若管理员为团队配置指令，则填管理员用户 ID；若支持员工独立指令集，则填员工 ID |
 | `text` | TEXT UNIQUE | 指令原文 |
+| `status` | TEXT | `enabled`/`disabled`，禁用的指令不会参与匹配 |
 | `embedding` | BLOB | 语义向量（二进制存储）。当后端为 `bm25_fuzz` 时写入空字节以占位 |
 | `created_at` / `updated_at` | DATETIME | 记录时间戳 |
 
@@ -38,6 +39,7 @@
 2. **CommandMatcher**
    - 针对 `semantic` 缓存 `(texts, vectors)`，并在缺失 embedding 时自动补齐。
    - 针对 `bm25_fuzz` 缓存 `(texts, BM25Okapi)`，查询阶段使用 RapidFuzz 对召回候选重排。
+   - 仅加载 `status=enabled` 的指令进入缓存，禁用项自动跳过。
 3. **匹配流程**
    - 读取用户设置（开关 + 阈值），若关闭匹配直接返回 `matched=false`。
    - 根据所选后端执行余弦匹配或 BM25+RapidFuzz 匹配，返回 `CommandMatchResult`。
@@ -81,6 +83,10 @@
 ### `PUT /api/commands/{command_id}`
 - Body：`{ "text": "新的指令内容" }`
 - 行为：更新指令文本，并在 `semantic` 模式下重新写入 embedding；若文本重复或记录不存在返回 400/404。
+
+### `PATCH /api/commands/{command_id}/status`
+- Body：`{ "status": "enabled" | "disabled" }`
+- 行为：切换单条指令状态；禁用的指令不会再被 CommandMatcher 缓存及匹配逻辑使用。成功后返回最新的指令信息。
 
 ### `DELETE /api/commands/{command_id}`
 - 删除指定指令；成功返回 `{ "deleted": true }`。
