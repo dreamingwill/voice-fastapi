@@ -9,7 +9,7 @@ grpcio-tools==1.75.1
 h11==0.16.0
 idna==3.10
 jieba==0.42.1
-numpy==2.3.4
+numpy==1.26.4
 protobuf==6.32.1
 pycparser==2.23
 pydantic==2.11.9
