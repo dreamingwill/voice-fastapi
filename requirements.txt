@@ -8,12 +8,15 @@ grpcio==1.75.1
 grpcio-tools==1.75.1
 h11==0.16.0
 idna==3.10
+jieba==0.42.1
 numpy==2.3.4
 protobuf==6.32.1
 pycparser==2.23
 pydantic==2.11.9
 pydantic_core==2.33.2
 python-multipart==0.0.20
+rank-bm25==0.2.2
+rapidfuzz==3.10.1
 setuptools==78.1.1
 sherpa-onnx==1.12.14
 sherpa-onnx-bin==1.12.14

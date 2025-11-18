@@ -1,5 +1,13 @@
 # 指令匹配识别模块设计
 
+## 后端模式
+
+- 服务支持两种匹配后端，通过环境变量 `COMMAND_MATCH_BACKEND` 控制：
+  - `bm25_fuzz`（默认）：使用 BM25 召回 + RapidFuzz 模糊比对。该模式不依赖任何语义向量模型，适合 RK3588/Orange Pi 5 Plus 等板子。
+  - `semantic`：沿用 `bge-small-zh` 语义向量，使用余弦相似度。
+- 运行时只会初始化当前后端所需资源：当 `bm25_fuzz` 启用时不会加载 `SentenceTransformer` 模型。
+- 阈值语义保持不变（0–1 之间的浮点数）。在 `bm25_fuzz` 模式下 RapidFuzz 的 0–100 分值会归一化为 0–1 再与阈值比较。
+
 ## 数据库结构
 
 ### `commands`
@@ -8,7 +16,7 @@
 | `id` | INTEGER PK | 自增主键 |
 | `user_id` | INTEGER | 指令所有者（使用开关的帐号）。若管理员为团队配置指令，则填管理员用户 ID；若支持员工独立指令集，则填员工 ID |
 | `text` | TEXT UNIQUE | 指令原文 |
-| `embedding` | BLOB | 512 维 `float32` 向量（二进制存储） |
+| `embedding` | BLOB | 语义向量（二进制存储）。当后端为 `bm25_fuzz` 时写入空字节以占位 |
 | `created_at` / `updated_at` | DATETIME | 记录时间戳 |
 
 > 当前版本以“拥有该指令集并控制开关的用户”为 `user_id`，即通常是管理员本人的 ID；后台可根据业务将员工映射到对应的管理员 ID。
@@ -23,15 +31,23 @@
 | `updated_at` | DATETIME | 更新时间 |
 
 ## 服务类与流程
-1. **CommandEmbeddingService**：封装 `SentenceTransformer("models/bge-small-zh")`，提供 `encode(texts)` 返回归一化向量。
-2. **CommandRepository**：负责 `commands` 和 `command_settings` 的 CRUD。
-3. **CommandMatcher**：缓存指定用户的全部指令向量，执行余弦相似度匹配，返回 `{"matched": bool, "command": str | None, "score": float}`。
+1. **CommandService**
+   - 初始化时根据 `COMMAND_MATCH_BACKEND` 选择后端。
+   - 在 `semantic` 模式下实例化 `CommandEmbeddingService` 并在上传/更新指令时生成 embedding。
+   - 在 `bm25_fuzz` 模式下跳过向量生成，数据库 `embedding` 字段写入 `b""`。
+2. **CommandMatcher**
+   - 针对 `semantic` 缓存 `(texts, vectors)`，并在缺失 embedding 时自动补齐。
+   - 针对 `bm25_fuzz` 缓存 `(texts, BM25Okapi)`，查询阶段使用 RapidFuzz 对召回候选重排。
+3. **匹配流程**
+   - 读取用户设置（开关 + 阈值），若关闭匹配直接返回 `matched=false`。
+   - 根据所选后端执行余弦匹配或 BM25+RapidFuzz 匹配，返回 `CommandMatchResult`。
+   - RapidFuzz 分数会先 `/100` 再与阈值比较，response 中 `score` 字段同样返回归一化后的结果。
 
 ## REST 接口
 
 ### `POST /api/commands/upload`
 - Body：`{ "commands": ["指令一", "指令二", ...] }`
-- 行为：校验文本 → 生成 embedding → `INSERT OR REPLACE` 到 `commands` 表（按当前用户 ID）。
+- 行为：校验文本 → 按选择的后端生成 embedding 或写入空字节 → `INSERT OR REPLACE` 到 `commands` 表（按当前用户 ID）。
 - 响应：`{ "inserted": n }`
 
 ### `POST /api/commands/toggle`
@@ -64,7 +80,7 @@
 
 ### `PUT /api/commands/{command_id}`
 - Body：`{ "text": "新的指令内容" }`
-- 行为：更新指令文本并重新写入 embedding；若文本重复或记录不存在返回 400/404。
+- 行为：更新指令文本，并在 `semantic` 模式下重新写入 embedding；若文本重复或记录不存在返回 400/404。
 
 ### `DELETE /api/commands/{command_id}`
 - 删除指定指令；成功返回 `{ "deleted": true }`。
@@ -87,8 +103,3 @@
   - 未匹配：`"command_match": { "matched": false }`
 - 上传指令后需刷新 matcher 缓存（服务端在写库后已自动失效缓存）。
 - WebSocket `audio.start` 握手数据需携带 `token`（与 REST 登录返回的 access token 相同），服务端据此定位当前用户并读取其指令及开关状态；若无 token 则默认不启用指令识别。
-
-## 其它注意事项
-- matcher 阈值默认 0.75，可放配置或 settings 表。
-- `commands` 表可以按 `user_id` + `text` 建唯一索引，支持多用户。
-- 若环境未预装模型，需确保 `models/bge-small-zh` 可用。*** End Patch
