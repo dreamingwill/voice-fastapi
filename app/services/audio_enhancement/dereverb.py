@@ -3,7 +3,10 @@ from __future__ import annotations
 import logging
 
 import numpy as np
-import pyroomacoustics as pra
+try:
+    from pyroomacoustics.dereverberation.wpe import wpe as pra_wpe
+except Exception:  # pragma: no cover - optional dependency
+    pra_wpe = None
 
 from .base import BaseEnhancementModule, EnhancementConfig
 
@@ -15,15 +18,20 @@ class DereverbWPE(BaseEnhancementModule):
 
     def __init__(self, block_size: int = 1024):
         self.block_size = block_size
+        self._backend_available = pra_wpe is not None
+        self._warned_backend_missing = False
 
     def process(self, audio: np.ndarray, sample_rate: int, config: EnhancementConfig | None = None, **_: object) -> np.ndarray:
-        if audio.size < self.block_size:
+        if audio.size < self.block_size or not self._backend_available:
+            if not self._backend_available and not self._warned_backend_missing:
+                logger.warning("pyroomacoustics WPE backend is unavailable")
+                self._warned_backend_missing = True
             return audio
 
         cfg = config or EnhancementConfig()
         x = np.expand_dims(audio.astype(np.float32), axis=0)
         try:
-            enhanced = pra.dereverberation.wpe.wpe(
+            enhanced = pra_wpe(
                 x,
                 taps=cfg.dereverb_taps,
                 delay=cfg.dereverb_delay,
