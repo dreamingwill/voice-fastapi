@@ -98,6 +98,7 @@ class HealthResponse(BaseModel):
     asr_ready: bool
     speaker_ready: bool
     database: str
+    speaker_recognition_enabled: bool
 
 
 class MetricsResponse(BaseModel):
@@ -189,6 +190,14 @@ class CommandUpdateRequest(BaseModel):
     text: str
 
 
+class SystemSettingsResponse(BaseModel):
+    enable_speaker_recognition: bool
+
+
+class SystemSettingsUpdate(BaseModel):
+    enable_speaker_recognition: bool
+
+
 __all__ = [
     "UserCreateAndUpdate",
     "UserResponse",
@@ -214,4 +223,6 @@ __all__ = [
     "CommandListResponse",
     "CommandSearchResponse",
     "CommandUpdateRequest",
+    "SystemSettingsResponse",
+    "SystemSettingsUpdate",
 ]

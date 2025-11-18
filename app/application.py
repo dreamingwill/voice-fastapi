@@ -7,13 +7,15 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .api import auth as auth_routes
 from .api import logs as logs_routes
+from .api import settings as settings_routes
 from .api import status as status_routes
 from .api import users as users_routes
 from .api import ws as ws_routes
 from .api import transcripts as transcripts_routes
 from .api import commands as command_routes
 from .config import DEFAULT_ALLOWED_ORIGINS
-from .database import init_db
+from .database import SessionLocal, init_db
+from .services.settings import load_system_settings_snapshot
 from .services.voice import SpeakerEmbedder, create_recognizer
 from .utils import now_utc
 
@@ -44,6 +46,8 @@ def create_app(args):
             "undetermined_count": 0,
             "audio_queue_depth": 0,
         }
+        with SessionLocal() as db:
+            app.state.system_settings = load_system_settings_snapshot(db)
 
         logger.info(
             (
@@ -129,6 +133,7 @@ def create_app(args):
     app.include_router(status_routes.router)
     app.include_router(transcripts_routes.router)
     app.include_router(command_routes.router)
+    app.include_router(settings_routes.router)
     app.include_router(ws_routes.router)
 
     @app.get("/")

@@ -35,6 +35,8 @@ class AsrSession:
         self.args = app.state.args
         self.recognizer = app.state.recognizer
         self.embedder: SpeakerEmbedder = app.state.embedder
+        settings = getattr(app.state, "system_settings", None)
+        self.speaker_recognition_enabled = bool(getattr(settings, "enable_speaker_recognition", True))
 
         self.sample_rate_client = getattr(self.embedder, "sample_rate", None) or self.args.sample_rate or 16000
         self.dtype = "float32"
@@ -71,12 +73,14 @@ class AsrSession:
     def _try_speaker(
         self, force: bool = False
     ) -> Tuple[str, float, Optional[SpeakerCandidate], List[SpeakerCandidate]]:
+        if not self.speaker_recognition_enabled or self.embedder is None:
+            return "unknown", 0.0, None, []
         self._last_speaker_eval_latency_ms = None
         buf = self._concat_cur_utt_audio()
         need_len = int(self.args.min_spk_seconds * self.sample_rate_client)
         if (not force) and (buf.size < need_len):
             return "unknown", 0.0, None, []
-        
+
         eval_start = time.perf_counter()
         st = self.embedder.create_stream()
         st.accept_waveform(sample_rate=self.sample_rate_client, waveform=buf)
@@ -331,7 +335,7 @@ class AsrSession:
         #     len(text),
         # )
 
-        if not self.cur_utt_speaker_guess_sent:
+        if self.speaker_recognition_enabled and not self.cur_utt_speaker_guess_sent:
             guess, sim, cand, topk = self._try_speaker(force=False)
             speaker = guess
             self.latest_topk = topk
@@ -339,6 +343,8 @@ class AsrSession:
                 self.cur_utt_speaker_guess_sent = True
                 self.current_speaker_candidate = cand
                 await self._send_speaker_state(cand, sim)
+        elif not self.speaker_recognition_enabled:
+            self.latest_topk = []
         await self._send_partial(text, speaker)
 
         if endpoint_detected:
@@ -350,11 +356,15 @@ class AsrSession:
                 self.cur_utt_started_at = time.perf_counter()
                 self.cur_utt_start_sample = self.total_samples_in
             else:
-                final_spk, final_sim, cand, topk = self._try_speaker(force=True)
-                self.latest_topk = topk
-                if cand is not None:
-                    self.current_speaker_candidate = cand
-                    await self._send_speaker_state(cand, final_sim)
+                if self.speaker_recognition_enabled:
+                    final_spk, final_sim, cand, topk = self._try_speaker(force=True)
+                    self.latest_topk = topk
+                    if cand is not None:
+                        self.current_speaker_candidate = cand
+                        await self._send_speaker_state(cand, final_sim)
+                else:
+                    final_spk, final_sim, cand, topk = "unknown", 0.0, None, []
+                    self.latest_topk = []
                 await self._send_final(
                     final_text,
                     final_spk,
@@ -368,11 +378,15 @@ class AsrSession:
     async def handle_done(self):
         text = self.recognizer.get_result(self.stream).strip()
         if text:
-            final_spk, final_sim, cand, topk = self._try_speaker(force=True)
-            self.latest_topk = topk
-            if cand is not None:
-                self.current_speaker_candidate = cand
-                await self._send_speaker_state(cand, final_sim)
+            if self.speaker_recognition_enabled:
+                final_spk, final_sim, cand, topk = self._try_speaker(force=True)
+                self.latest_topk = topk
+                if cand is not None:
+                    self.current_speaker_candidate = cand
+                    await self._send_speaker_state(cand, final_sim)
+            else:
+                final_spk, final_sim, cand, topk = "unknown", 0.0, None, []
+                self.latest_topk = []
             await self._send_final(
                 text,
                 final_spk,
@@ -474,6 +488,7 @@ class AsrSession:
                 "heartbeatInterval": 20000,
                 "commandMatchingEnabled": self.command_matching_enabled,
                 "commandMatchThreshold": self.command_match_threshold,
+                "speakerRecognitionEnabled": self.speaker_recognition_enabled,
             }
         )
 
@@ -491,6 +506,7 @@ class AsrSession:
                 "channels": channels,
                 "locale": self.session_info.get("locale"),
                 "command_matching_enabled": self.command_matching_enabled,
+                "speaker_recognition_enabled": self.speaker_recognition_enabled,
             },
         )
 

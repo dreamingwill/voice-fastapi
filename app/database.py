@@ -24,6 +24,7 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     _ensure_user_columns()
     _ensure_admin_account()
+    _ensure_system_settings()
 
 
 def _ensure_user_columns() -> None:
@@ -77,6 +78,16 @@ def _ensure_admin_account() -> None:
                     is_builtin=True,
                 )
             )
+            db.commit()
+
+
+def _ensure_system_settings() -> None:
+    from .models import SystemSettings
+
+    with SessionLocal() as db:
+        settings = db.query(SystemSettings).order_by(SystemSettings.id).first()
+        if settings is None:
+            db.add(SystemSettings(enable_speaker_recognition=True))
             db.commit()
 
 

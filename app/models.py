@@ -154,6 +154,21 @@ class CommandSettings(Base):
     )
 
 
+class SystemSettings(Base):
+    __tablename__ = "system_settings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    enable_speaker_recognition = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    updated_at = Column(
+        DateTime(timezone=True),
+        default=now_utc,
+        server_default=func.now(),
+        onupdate=now_utc,
+        index=True,
+    )
+
+
 __all__ = [
     "User",
     "AdminAccount",
@@ -162,4 +177,5 @@ __all__ = [
     "TranscriptSegment",
     "Command",
     "CommandSettings",
+    "SystemSettings",
 ]

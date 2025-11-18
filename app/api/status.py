@@ -29,6 +29,8 @@ async def health(request: Request):
     args = getattr(request.app.state, "args", Namespace())
     asr_model = getattr(args, "encoder", None)
     speaker_model = getattr(args, "model_path", None)
+    system_settings = getattr(request.app.state, "system_settings", None)
+    speaker_enabled = bool(getattr(system_settings, "enable_speaker_recognition", True))
 
     return HealthResponse(
         status="ok" if all([asr_ready, speaker_ready, db_status == "ok"]) else "degraded",
@@ -38,6 +40,7 @@ async def health(request: Request):
         asr_ready=asr_ready,
         speaker_ready=speaker_ready,
         database=db_status,
+        speaker_recognition_enabled=speaker_enabled,
     )
 
 
