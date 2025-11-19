@@ -1,14 +1,12 @@
 import os
 from dataclasses import dataclass
 from functools import lru_cache
-from pathlib import Path
 from threading import RLock
-from typing import Dict, List, Optional, Sequence, Tuple, Union
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 from rank_bm25 import BM25Okapi
 from rapidfuzz import fuzz
-from sentence_transformers import SentenceTransformer
 from sqlalchemy.orm import Session
 
 try:
@@ -22,36 +20,12 @@ from ..utils import to_iso
 
 DEFAULT_MATCH_THRESHOLD = float(os.getenv("COMMAND_MATCH_THRESHOLD", "0.75"))
 
-_BACKEND_SEMANTIC = "semantic"
-_BACKEND_BM25_FUZZ = "bm25_fuzz"
-_VALID_BACKENDS = {_BACKEND_SEMANTIC, _BACKEND_BM25_FUZZ}
-
-DEFAULT_MATCH_BACKEND = os.getenv("COMMAND_MATCH_BACKEND", _BACKEND_BM25_FUZZ).strip().lower()
-if DEFAULT_MATCH_BACKEND not in _VALID_BACKENDS:
-    DEFAULT_MATCH_BACKEND = _BACKEND_BM25_FUZZ
-
 BM25_TOP_K = max(1, int(os.getenv("COMMAND_BM25_TOPK", "10")))
-
-
-def _resolve_backend(choice: Optional[str]) -> str:
-    if choice:
-        normalized = choice.strip().lower()
-        if normalized in _VALID_BACKENDS:
-            return normalized
-    return DEFAULT_MATCH_BACKEND
 
 
 COMMAND_STATUS_ENABLED = "enabled"
 COMMAND_STATUS_DISABLED = "disabled"
 _VALID_COMMAND_STATUSES = {COMMAND_STATUS_ENABLED, COMMAND_STATUS_DISABLED}
-
-
-def _default_model_path() -> str:
-    env_path = os.getenv("COMMAND_MODEL_PATH")
-    if env_path:
-        return env_path
-    project_root = Path(__file__).resolve().parents[2]
-    return str(project_root / "models" / "bge-small-zh")
 
 
 def _normalize_commands(commands: Sequence[str]) -> List[str]:
@@ -101,80 +75,24 @@ class CommandMatchResult:
 
 
 @dataclass
-class SemanticMatcherState:
-    texts: Tuple[str, ...]
-    vectors: np.ndarray
-
-
-@dataclass
 class Bm25MatcherState:
     texts: Tuple[str, ...]
     normalized_texts: Tuple[str, ...]
     bm25: Optional[BM25Okapi]
 
 
-class CommandEmbeddingService:
-    def __init__(self, model_path: Optional[str] = None):
-        self.model_path = model_path or _default_model_path()
-        if not Path(self.model_path).exists():
-            raise FileNotFoundError(f"command embedding model not found: {self.model_path}")
-        self._model = SentenceTransformer(self.model_path)
-
-    def encode(self, texts: Sequence[str]) -> np.ndarray:
-        if not texts:
-            raise ValueError("No commands provided for embedding")
-        vectors = self._model.encode(
-            list(texts),
-            normalize_embeddings=True,
-            convert_to_numpy=True,
-        )
-        return np.asarray(vectors, dtype=np.float32)
-
-
 class CommandMatcher:
     def __init__(
         self,
         session_factory=SessionLocal,
-        *,
-        backend: str = DEFAULT_MATCH_BACKEND,
-        embedding_service: Optional["CommandEmbeddingService"] = None,
     ):
         self._session_factory = session_factory
-        self._backend = backend
-        self._embedding_service = embedding_service
-        self._cache: Dict[int, Union[SemanticMatcherState, Bm25MatcherState]] = {}
+        self._cache: Dict[int, Bm25MatcherState] = {}
         self._lock = RLock()
 
     def invalidate(self, user_id: int) -> None:
         with self._lock:
             self._cache.pop(user_id, None)
-
-    def _load_semantic_state(self, rows: Sequence[Command], db: Session) -> SemanticMatcherState:
-        texts = tuple(row.text for row in rows)
-        if not rows:
-            return SemanticMatcherState(texts=texts, vectors=np.empty((0, 0), dtype=np.float32))
-        vectors: List[Optional[np.ndarray]] = [None] * len(rows)
-        missing_indices: List[int] = []
-        for idx, row in enumerate(rows):
-            if row.embedding:
-                vectors[idx] = np.frombuffer(row.embedding, dtype=np.float32)
-            else:
-                missing_indices.append(idx)
-        if missing_indices:
-            if not self._embedding_service:
-                raise ValueError("Semantic backend selected but embedding service unavailable")
-            missing_texts = [rows[idx].text for idx in missing_indices]
-            new_vectors = self._embedding_service.encode(missing_texts)
-            for offset, idx in enumerate(missing_indices):
-                vector = new_vectors[offset]
-                rows[idx].embedding = vector.tobytes()
-                db.add(rows[idx])
-                vectors[idx] = vector
-            db.commit()
-        if any(vec is None for vec in vectors):
-            raise ValueError("Failed to build semantic matcher state due to missing embeddings")
-        matrix = np.vstack(vectors) if vectors else np.empty((0, 0), dtype=np.float32)
-        return SemanticMatcherState(texts=texts, vectors=matrix)
 
     def _load_bm25_state(self, rows: Sequence[Command]) -> Bm25MatcherState:
         texts = tuple(row.text for row in rows)
@@ -185,7 +103,7 @@ class CommandMatcher:
         model = BM25Okapi(tokenized) if any(tokens for tokens in tokenized) else None
         return Bm25MatcherState(texts=texts, normalized_texts=normalized_texts, bm25=model)
 
-    def _load_from_db(self, user_id: int) -> Union[SemanticMatcherState, Bm25MatcherState]:
+    def _load_from_db(self, user_id: int) -> Bm25MatcherState:
         with self._session_factory() as db:
             rows: List[Command] = (
                 db.query(Command)
@@ -194,11 +112,9 @@ class CommandMatcher:
                 .order_by(Command.created_at.asc(), Command.id.asc())
                 .all()
             )
-            if self._backend == _BACKEND_SEMANTIC:
-                return self._load_semantic_state(rows, db)
             return self._load_bm25_state(rows)
 
-    def get_state(self, user_id: int) -> Union[SemanticMatcherState, Bm25MatcherState]:
+    def get_state(self, user_id: int) -> Bm25MatcherState:
         with self._lock:
             if user_id in self._cache:
                 return self._cache[user_id]
@@ -212,19 +128,9 @@ class CommandService:
         self,
         *,
         session_factory=SessionLocal,
-        model_path: Optional[str] = None,
-        backend: Optional[str] = None,
     ):
         self._session_factory = session_factory
-        self._backend = _resolve_backend(backend)
-        self._embedding: Optional[CommandEmbeddingService] = None
-        if self._backend == _BACKEND_SEMANTIC:
-            self._embedding = CommandEmbeddingService(model_path=model_path)
-        self._matcher = CommandMatcher(
-            session_factory=session_factory,
-            backend=self._backend,
-            embedding_service=self._embedding,
-        )
+        self._matcher = CommandMatcher(session_factory=session_factory)
 
     @property
     def default_threshold(self) -> float:
@@ -293,30 +199,22 @@ class CommandService:
         normalized = _normalize_commands(commands)
         if not normalized:
             raise ValueError("No valid commands provided")
-        if self._backend == _BACKEND_SEMANTIC:
-            if not self._embedding:
-                raise ValueError("Semantic backend requires embedding service")
-            vectors: Sequence[Optional[np.ndarray]] = self._embedding.encode(normalized)
-        else:
-            vectors = [None] * len(normalized)
         with self._get_session() as db:
             for idx, text in enumerate(normalized):
-                vector = vectors[idx]
-                embedding_bytes = vector.tobytes() if vector is not None else b""
                 existing = (
                     db.query(Command)
                     .filter(Command.user_id == user_id, Command.text == text)
                     .one_or_none()
                 )
                 if existing:
-                    existing.embedding = embedding_bytes
+                    existing.embedding = b""
                 else:
                     db.add(
                         Command(
                             user_id=user_id,
                             text=text,
                             status=COMMAND_STATUS_ENABLED,
-                            embedding=embedding_bytes,
+                            embedding=b"",
                         )
                     )
             db.commit()
@@ -430,13 +328,7 @@ class CommandService:
             if duplicate:
                 raise ValueError("Command text already exists")
             command.text = new_text
-            if self._backend == _BACKEND_SEMANTIC:
-                if not self._embedding:
-                    raise ValueError("Semantic backend requires embedding service")
-                vector = self._embedding.encode([new_text])[0]
-                command.embedding = vector.tobytes()
-            else:
-                command.embedding = b""
+            command.embedding = b""
             db.commit()
             db.refresh(command)
         self._matcher.invalidate(user_id)
@@ -497,31 +389,9 @@ class CommandService:
         threshold = threshold_override or current_settings.match_threshold or self.default_threshold
 
         state = self._matcher.get_state(user_id)
-        if self._backend == _BACKEND_SEMANTIC:
-            if not isinstance(state, SemanticMatcherState):
-                raise ValueError("Unexpected matcher state for semantic backend")
-            return self._match_with_semantic(content, state, threshold)
         if not isinstance(state, Bm25MatcherState):
             raise ValueError("Unexpected matcher state for BM25 backend")
         return self._match_with_bm25(content, state, threshold)
-
-    def _match_with_semantic(
-        self,
-        content: str,
-        state: SemanticMatcherState,
-        threshold: float,
-    ) -> CommandMatchResult:
-        if state.vectors.size == 0 or len(state.texts) == 0:
-            return CommandMatchResult(False, None, 0.0)
-        if not self._embedding:
-            raise ValueError("Semantic backend requires embedding service")
-        query_vec = self._embedding.encode([content])[0]
-        scores = state.vectors @ query_vec
-        best_idx = int(np.argmax(scores))
-        best_score = float(scores[best_idx])
-        if best_score < threshold:
-            return CommandMatchResult(False, None, best_score)
-        return CommandMatchResult(True, state.texts[best_idx], best_score)
 
     def _match_with_bm25(
         self,
@@ -566,5 +436,4 @@ __all__ = [
     "CommandMatchResult",
     "get_command_service",
     "DEFAULT_MATCH_THRESHOLD",
-    "DEFAULT_MATCH_BACKEND",
 ]
