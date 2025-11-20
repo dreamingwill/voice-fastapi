@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import time
@@ -7,6 +8,7 @@ import numpy as np
 from fastapi import FastAPI, HTTPException, WebSocket
 from pydantic import ValidationError
 
+from ..command_forwarder import forward_command_match
 from ..events import record_event_log
 from ..transcripts import append_transcript_segment, finalize_transcript
 from ...auth import validate_access_token
@@ -223,6 +225,7 @@ class AsrSession:
         ]
         latency_ms = int((time.perf_counter() - self.cur_utt_started_at) * 1000)
         command_match = self._evaluate_command_match(text)
+        self._maybe_forward_command(command_match, speaker)
         await self.ws.send_json(
             {
                 "type": "final",
@@ -596,10 +599,25 @@ class AsrSession:
         payload: Dict[str, Any] = {"matched": bool(result.matched)}
         if result.matched:
             payload["command"] = result.command
-            payload["score"] = result.score
-        else:
-            payload["score"] = result.score
+            if result.command_code:
+                payload["code"] = result.command_code
+            if result.command_id is not None:
+                payload["command_id"] = result.command_id
+        payload["score"] = result.score
         return payload
+
+    def _maybe_forward_command(self, command_match: Dict[str, Any], speaker: str) -> None:
+        code = (command_match or {}).get("code")
+        if not code:
+            return
+
+        async def _run():
+            try:
+                await forward_command_match(code=code, speaker=speaker)
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.warning("command.forward failed code=%s error=%s", code, exc)
+
+        asyncio.create_task(_run())
 
 
 __all__ = ["AsrSession"]

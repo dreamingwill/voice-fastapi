@@ -1,7 +1,7 @@
 from typing import Any, Dict, List, Optional
 from typing_extensions import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class UserCreateAndUpdate(BaseModel):
@@ -153,8 +153,32 @@ class TranscriptsResponse(BaseModel):
     page_size: int
 
 
+class CommandUploadItem(BaseModel):
+    text: str
+    code: Optional[str] = None
+
+
 class CommandUploadRequest(BaseModel):
-    commands: List[str]
+    commands: List[CommandUploadItem]
+
+    @field_validator("commands", mode="before")
+    @classmethod
+    def _normalize_commands(cls, value):  # type: ignore[override]
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise ValueError("commands must be a list")
+        normalized: List[Dict[str, Any]] = []
+        for item in value:
+            if isinstance(item, str):
+                normalized.append({"text": item})
+            elif isinstance(item, CommandUploadItem):
+                normalized.append(item.model_dump())
+            elif isinstance(item, dict):
+                normalized.append(item)
+            else:
+                raise ValueError("Invalid command entry")
+        return normalized
 
 
 class CommandToggleRequest(BaseModel):
@@ -165,6 +189,7 @@ class CommandToggleRequest(BaseModel):
 class CommandItem(BaseModel):
     id: int
     text: str
+    code: Optional[str] = None
     status: str
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
@@ -189,6 +214,7 @@ class CommandSearchResponse(BaseModel):
 
 class CommandUpdateRequest(BaseModel):
     text: str
+    code: Optional[str] = None
 
 
 class CommandStatusUpdateRequest(BaseModel):
@@ -222,6 +248,7 @@ __all__ = [
     "TranscriptResponse",
     "TranscriptDetailResponse",
     "TranscriptsResponse",
+    "CommandUploadItem",
     "CommandUploadRequest",
     "CommandToggleRequest",
     "CommandItem",

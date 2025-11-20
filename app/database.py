@@ -23,6 +23,7 @@ def init_db() -> None:
 
     Base.metadata.create_all(bind=engine)
     _ensure_user_columns()
+    _ensure_command_code_column()
     _ensure_admin_account()
     _ensure_system_settings()
 
@@ -48,6 +49,17 @@ def _ensure_user_columns() -> None:
     if "ix_users_account" not in indexes:
         with engine.begin() as conn:
             conn.execute(text("CREATE UNIQUE INDEX ix_users_account ON users (account)"))
+
+
+def _ensure_command_code_column() -> None:
+    inspector = inspect(engine)
+    if "commands" not in inspector.get_table_names():
+        return
+    existing_columns = {col["name"] for col in inspector.get_columns("commands")}
+    if "code" in existing_columns:
+        return
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE commands ADD COLUMN code VARCHAR(64)"))
 
 
 def get_db():

@@ -16,7 +16,9 @@ ADMIN_ROLE = os.getenv("ADMIN_ROLE", "admin")
 DEFAULT_ALLOWED_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173"
 
 DEFAULT_CONFIG_PATH = os.getenv("VOICE_SERVER_CONFIG", "config/app_config.json")
-
+COMMAND_FORWARD_URL = os.getenv("COMMAND_FORWARD_URL")
+COMMAND_FORWARD_TIMEOUT = float(os.getenv("COMMAND_FORWARD_TIMEOUT", "5"))
+print("当前 COMMAND_FORWARD_URL =", COMMAND_FORWARD_URL)
 
 def _load_config(path: Optional[str], *, required: bool = False) -> Dict[str, Any]:
     if not path:

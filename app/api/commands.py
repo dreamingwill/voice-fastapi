@@ -10,7 +10,7 @@ from ..schemas import (
     CommandItem,
     CommandStatusUpdateRequest,
 )
-from ..services.commands import get_command_service
+from ..services.commands import CommandCreatePayload, get_command_service
 
 router = APIRouter(prefix="/api/commands", tags=["commands"])
 
@@ -29,8 +29,9 @@ async def get_commands(
 @router.post("/upload", status_code=status.HTTP_200_OK)
 async def upload_commands(payload: CommandUploadRequest, user: TokenPayload = Depends(require_admin)):
     service = get_command_service()
+    entries = [CommandCreatePayload(text=item.text, code=item.code) for item in payload.commands]
     try:
-        inserted = service.upload_commands(user.id, payload.commands)
+        inserted = service.upload_commands(user.id, entries)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return {"inserted": inserted}
@@ -96,8 +97,15 @@ async def update_command(
     user: TokenPayload = Depends(require_admin),
 ):
     service = get_command_service()
+    update_code = "code" in payload.model_fields_set
     try:
-        updated = service.update_command(user.id, command_id, payload.text)
+        updated = service.update_command(
+            user.id,
+            command_id,
+            payload.text,
+            code=payload.code,
+            update_code=update_code,
+        )
     except ValueError as exc:
         msg = str(exc)
         if msg == "Command not found":

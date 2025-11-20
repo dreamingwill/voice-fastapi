@@ -28,20 +28,32 @@ COMMAND_STATUS_DISABLED = "disabled"
 _VALID_COMMAND_STATUSES = {COMMAND_STATUS_ENABLED, COMMAND_STATUS_DISABLED}
 
 
-def _normalize_commands(commands: Sequence[str]) -> List[str]:
-    items = []
-    seen = set()
-    for text in commands:
-        if not text:
-            continue
+def _normalize_code(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    code = value.strip()
+    return code or None
+
+
+def _normalize_commands(commands: Sequence["CommandCreatePayload"]) -> List["CommandCreatePayload"]:
+    items: List[CommandCreatePayload] = []
+    seen_texts = set()
+    seen_codes = set()
+    for command in commands:
+        text = command.text or ""
         clean = text.strip()
         if not clean:
             continue
         key = _normalize_for_matching(clean)
-        if not key or key in seen:
+        if not key or key in seen_texts:
             continue
-        seen.add(key)
-        items.append(clean)
+        seen_texts.add(key)
+        normalized_code = _normalize_code(command.code)
+        if normalized_code:
+            if normalized_code in seen_codes:
+                raise ValueError("Duplicate command code in upload payload")
+            seen_codes.add(normalized_code)
+        items.append(CommandCreatePayload(text=clean, code=normalized_code))
     return items
 
 
@@ -68,16 +80,26 @@ def _tokenize(text: str) -> List[str]:
 
 
 @dataclass
+class CommandCreatePayload:
+    text: str
+    code: Optional[str] = None
+
+
+@dataclass
 class CommandMatchResult:
     matched: bool
     command: Optional[str]
     score: float
+    command_id: Optional[int] = None
+    command_code: Optional[str] = None
 
 
 @dataclass
 class Bm25MatcherState:
     texts: Tuple[str, ...]
     normalized_texts: Tuple[str, ...]
+    command_ids: Tuple[int, ...]
+    command_codes: Tuple[Optional[str], ...]
     bm25: Optional[BM25Okapi]
 
 
@@ -97,11 +119,25 @@ class CommandMatcher:
     def _load_bm25_state(self, rows: Sequence[Command]) -> Bm25MatcherState:
         texts = tuple(row.text for row in rows)
         normalized_texts = tuple(_normalize_for_matching(text) for text in texts)
+        command_ids = tuple(int(row.id) for row in rows)
+        command_codes = tuple(row.code for row in rows)
         if not rows:
-            return Bm25MatcherState(texts=texts, normalized_texts=normalized_texts, bm25=None)
+            return Bm25MatcherState(
+                texts=texts,
+                normalized_texts=normalized_texts,
+                command_ids=command_ids,
+                command_codes=command_codes,
+                bm25=None,
+            )
         tokenized = [_tokenize(text) for text in texts]
         model = BM25Okapi(tokenized) if any(tokens for tokens in tokenized) else None
-        return Bm25MatcherState(texts=texts, normalized_texts=normalized_texts, bm25=model)
+        return Bm25MatcherState(
+            texts=texts,
+            normalized_texts=normalized_texts,
+            command_ids=command_ids,
+            command_codes=command_codes,
+            bm25=model,
+        )
 
     def _load_from_db(self, user_id: int) -> Bm25MatcherState:
         with self._session_factory() as db:
@@ -138,6 +174,27 @@ class CommandService:
 
     def _get_session(self) -> Session:
         return self._session_factory()
+
+    def _ensure_unique_code(
+        self,
+        db: Session,
+        user_id: int,
+        code: Optional[str],
+        *,
+        exclude_command_id: Optional[int] = None,
+    ) -> None:
+        if not code:
+            return
+        query = (
+            db.query(Command)
+            .filter(Command.user_id == user_id)
+            .filter(Command.code == code)
+        )
+        if exclude_command_id is not None:
+            query = query.filter(Command.id != exclude_command_id)
+        exists = query.first()
+        if exists:
+            raise ValueError("Command code already exists")
 
     def get_settings(self, user_id: int) -> CommandSettings:
         with self._get_session() as db:
@@ -183,6 +240,7 @@ class CommandService:
                 {
                     "id": cmd.id,
                     "text": cmd.text,
+                    "code": cmd.code,
                     "status": cmd.status,
                     "created_at": _ts(cmd.created_at),
                     "updated_at": _ts(cmd.updated_at),
@@ -195,24 +253,34 @@ class CommandService:
             "updated_at": _ts(settings.updated_at),
         }
 
-    def upload_commands(self, user_id: int, commands: Sequence[str]) -> int:
+    def upload_commands(self, user_id: int, commands: Sequence[CommandCreatePayload]) -> int:
         normalized = _normalize_commands(commands)
         if not normalized:
             raise ValueError("No valid commands provided")
         with self._get_session() as db:
-            for idx, text in enumerate(normalized):
+            for payload in normalized:
                 existing = (
                     db.query(Command)
-                    .filter(Command.user_id == user_id, Command.text == text)
+                    .filter(Command.user_id == user_id, Command.text == payload.text)
                     .one_or_none()
                 )
+                if payload.code:
+                    self._ensure_unique_code(
+                        db,
+                        user_id,
+                        payload.code,
+                        exclude_command_id=existing.id if existing else None,
+                    )
                 if existing:
                     existing.embedding = b""
+                    if payload.code is not None:
+                        existing.code = payload.code
                 else:
                     db.add(
                         Command(
                             user_id=user_id,
-                            text=text,
+                            text=payload.text,
+                            code=payload.code,
                             status=COMMAND_STATUS_ENABLED,
                             embedding=b"",
                         )
@@ -255,6 +323,7 @@ class CommandService:
                 {
                     "id": row.id,
                     "text": row.text,
+                    "code": row.code,
                     "status": row.status,
                     "created_at": _ts(row.created_at),
                     "updated_at": _ts(row.updated_at),
@@ -308,10 +377,19 @@ class CommandService:
         self._matcher.invalidate(user_id)
         return True
 
-    def update_command(self, user_id: int, command_id: int, text: str) -> Dict[str, object]:
+    def update_command(
+        self,
+        user_id: int,
+        command_id: int,
+        text: str,
+        *,
+        code: Optional[str] = None,
+        update_code: bool = False,
+    ) -> Dict[str, object]:
         new_text = (text or "").strip()
         if not new_text:
             raise ValueError("Command text cannot be empty")
+        normalized_code = _normalize_code(code) if update_code else None
         with self._get_session() as db:
             command = (
                 db.query(Command)
@@ -327,6 +405,9 @@ class CommandService:
             )
             if duplicate:
                 raise ValueError("Command text already exists")
+            if update_code:
+                self._ensure_unique_code(db, user_id, normalized_code, exclude_command_id=command.id)
+                command.code = normalized_code
             command.text = new_text
             command.embedding = b""
             db.commit()
@@ -339,6 +420,7 @@ class CommandService:
         return {
             "id": command.id,
             "text": command.text,
+            "code": command.code,
             "status": command.status,
             "created_at": _ts(command.created_at),
             "updated_at": _ts(command.updated_at),
@@ -365,6 +447,7 @@ class CommandService:
         return {
             "id": command.id,
             "text": command.text,
+            "code": command.code,
             "status": command.status,
             "created_at": _ts(command.created_at),
             "updated_at": _ts(command.updated_at),
@@ -412,6 +495,8 @@ class CommandService:
         sorted_indices = np.argsort(scores)[-top_k:][::-1]
         best_score = 0.0
         best_text: Optional[str] = None
+        best_code: Optional[str] = None
+        best_id: Optional[int] = None
         for idx in sorted_indices:
             idx_int = int(idx)
             candidate_text = state.texts[idx_int]
@@ -420,10 +505,12 @@ class CommandService:
             if fuzzy_score > best_score:
                 best_score = fuzzy_score
                 best_text = candidate_text
+                best_code = state.command_codes[idx_int] if idx_int < len(state.command_codes) else None
+                best_id = state.command_ids[idx_int] if idx_int < len(state.command_ids) else None
         normalized = best_score / 100.0
         if not best_text or normalized < threshold:
             return CommandMatchResult(False, None, normalized)
-        return CommandMatchResult(True, best_text, normalized)
+        return CommandMatchResult(True, best_text, normalized, command_id=best_id, command_code=best_code)
 
 
 @lru_cache(maxsize=1)
@@ -434,6 +521,7 @@ def get_command_service() -> CommandService:
 __all__ = [
     "CommandService",
     "CommandMatchResult",
+    "CommandCreatePayload",
     "get_command_service",
     "DEFAULT_MATCH_THRESHOLD",
 ]
