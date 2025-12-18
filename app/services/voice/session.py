@@ -503,6 +503,14 @@ class AsrSession:
             )
             return
 
+        # Allow per-session override for speaker recognition (visitor mode)
+        try:
+            if data.get("speakerRecognitionEnabled") is not None:
+                self.speaker_recognition_enabled = bool(data.get("speakerRecognitionEnabled"))
+        except Exception:
+            # ignore malformed override
+            pass
+
         self.sample_rate_client = sample_rate
         self.dtype_hint = "int16" if fmt.startswith("PCM16") else "float32"
         self.handshake_received = True

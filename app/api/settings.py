@@ -14,7 +14,6 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 async def get_system_settings(
     request: Request,
     db: Session = Depends(get_db),
-    _: TokenPayload = Depends(require_admin),
 ):
     snapshot = load_system_settings_snapshot(db)
     request.app.state.system_settings = snapshot

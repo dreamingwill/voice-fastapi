@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.security import HTTPAuthorizationCredentials
 
-from ..auth import TokenPayload, require_admin
+from ..auth import TokenPayload, require_admin, security, validate_access_token
 from ..schemas import (
     CommandListResponse,
     CommandSearchResponse,
@@ -40,16 +41,50 @@ async def upload_commands(payload: CommandUploadRequest, user: TokenPayload = De
 @router.post("/toggle", response_model=CommandListResponse, status_code=status.HTTP_200_OK)
 async def toggle_command_matching(
     payload: CommandToggleRequest,
-    user: TokenPayload = Depends(require_admin),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ):
+    # Determine acting user id: prefer authenticated admin; otherwise fall back to builtin admin
+    acting_user_id: int
+    if credentials and credentials.credentials:
+        try:
+            user = await validate_access_token(credentials.credentials)
+            acting_user_id = int(user.id)
+        except HTTPException:
+            acting_user_id = _get_builtin_admin_user_id()
+    else:
+        acting_user_id = _get_builtin_admin_user_id()
+
     service = get_command_service()
     service.update_matching_state(
-        user.id,
+        acting_user_id,
         enabled=payload.enabled,
         match_threshold=payload.match_threshold,
     )
-    listing = service.list_commands(user.id)
+    listing = service.list_commands(acting_user_id)
     return CommandListResponse(**listing)
+
+
+def _get_builtin_admin_user_id() -> int:
+    """Return the builtin admin's user id for unauthenticated toggles.
+
+    Falls back to the first admin account if the configured one is not found.
+    Raises 500 if no admin account exists at all.
+    """
+    from ..config import ADMIN_USERNAME
+    from ..database import SessionLocal
+    from ..models import AdminAccount
+
+    with SessionLocal() as db:
+        account = (
+            db.query(AdminAccount)
+            .filter(AdminAccount.username == ADMIN_USERNAME)
+            .first()
+        )
+        if account is None:
+            account = db.query(AdminAccount).order_by(AdminAccount.id.asc()).first()
+        if account is None:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="No admin account configured")
+        return int(account.id)
 
 
 @router.get("/search", response_model=CommandSearchResponse, status_code=status.HTTP_200_OK)
