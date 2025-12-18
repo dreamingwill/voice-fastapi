@@ -617,6 +617,22 @@ class AsrSession:
             except Exception as exc:  # pragma: no cover - defensive logging
                 logger.warning("command.forward failed code=%s error=%s", code, exc)
 
+        # Block forwarding if speaker is unknown
+        if not speaker or speaker == "unknown":
+            try:
+                # annotate the command_match payload for frontend awareness
+                command_match["blocked"] = True
+                command_match["block_reason"] = "unknown_speaker"
+            except Exception:
+                pass
+            logger.info(
+                "command.forward blocked due to unknown speaker code=%s speaker=%s",
+                code,
+                speaker,
+            )
+            return
+
+        # otherwise forward asynchronously
         asyncio.create_task(_run())
 
 
