@@ -8,6 +8,7 @@ import numpy as np
 from rank_bm25 import BM25Okapi
 from rapidfuzz import fuzz
 from sqlalchemy.orm import Session
+from sqlalchemy import case
 
 try:
     import jieba
@@ -212,7 +213,13 @@ class CommandService:
             base_query = (
                 db.query(Command)
                 .filter(Command.user_id == GLOBAL_USER_ID)
-                .order_by(Command.created_at.asc(), Command.id.asc())
+                # Order by non-null code first, then code asc, then text, then id
+                .order_by(
+                    case((Command.code.is_(None), 1), else_=0).asc(),
+                    Command.code.asc(),
+                    Command.text.asc(),
+                    Command.id.asc(),
+                )
             )
             total = base_query.count()
             commands: List[Command] = (
@@ -292,7 +299,13 @@ class CommandService:
                 db.query(Command)
                 .filter(Command.user_id == GLOBAL_USER_ID)
                 .filter(Command.text.like(like_pattern))
-                .order_by(Command.created_at.asc(), Command.id.asc())
+                # Order by non-null code first, then code asc, then text, then id
+                .order_by(
+                    case((Command.code.is_(None), 1), else_=0).asc(),
+                    Command.code.asc(),
+                    Command.text.asc(),
+                    Command.id.asc(),
+                )
             )
             total = base_query.count()
             rows: List[Command] = (
