@@ -19,6 +19,8 @@ from ..models import Command, CommandSettings
 from ..utils import to_iso
 
 DEFAULT_MATCH_THRESHOLD = float(os.getenv("COMMAND_MATCH_THRESHOLD", "0.75"))
+# Use a fixed global user id for storing and matching commands/settings without binding to any admin account
+GLOBAL_USER_ID = int(os.getenv("GLOBAL_COMMAND_USER_ID", "0"))
 
 BM25_TOP_K = max(1, int(os.getenv("COMMAND_BM25_TOPK", "10")))
 
@@ -109,12 +111,14 @@ class CommandMatcher:
         session_factory=SessionLocal,
     ):
         self._session_factory = session_factory
-        self._cache: Dict[int, Bm25MatcherState] = {}
+        # Single global cache for command state
+        self._cache: Optional[Bm25MatcherState] = None
         self._lock = RLock()
 
     def invalidate(self, user_id: int) -> None:
         with self._lock:
-            self._cache.pop(user_id, None)
+            # ignore user_id; operate on global cache
+            self._cache = None
 
     def _load_bm25_state(self, rows: Sequence[Command]) -> Bm25MatcherState:
         texts = tuple(row.text for row in rows)
@@ -143,7 +147,7 @@ class CommandMatcher:
         with self._session_factory() as db:
             rows: List[Command] = (
                 db.query(Command)
-                .filter(Command.user_id == user_id)
+                .filter(Command.user_id == GLOBAL_USER_ID)
                 .filter(Command.status == COMMAND_STATUS_ENABLED)
                 .order_by(Command.created_at.asc(), Command.id.asc())
                 .all()
@@ -152,10 +156,11 @@ class CommandMatcher:
 
     def get_state(self, user_id: int) -> Bm25MatcherState:
         with self._lock:
-            if user_id in self._cache:
-                return self._cache[user_id]
-            state = self._load_from_db(user_id)
-            self._cache[user_id] = state
+            # ignore user_id; keep a single global state
+            if self._cache is not None:
+                return self._cache
+            state = self._load_from_db(GLOBAL_USER_ID)
+            self._cache = state
             return state
 
 
@@ -200,13 +205,13 @@ class CommandService:
         with self._get_session() as db:
             settings = (
                 db.query(CommandSettings)
-                .filter(CommandSettings.user_id == user_id)
+                .filter(CommandSettings.user_id == GLOBAL_USER_ID)
                 .first()
             )
             if settings:
                 return settings
             settings = CommandSettings(
-                user_id=user_id,
+                user_id=GLOBAL_USER_ID,
                 enable_matching=False,
                 match_threshold=self.default_threshold,
             )
@@ -221,14 +226,14 @@ class CommandService:
         with self._get_session() as db:
             base_query = (
                 db.query(Command)
-                .filter(Command.user_id == user_id)
+                .filter(Command.user_id == GLOBAL_USER_ID)
                 .order_by(Command.created_at.asc(), Command.id.asc())
             )
             total = base_query.count()
             commands: List[Command] = (
                 base_query.offset((page - 1) * page_size).limit(page_size).all()
             )
-        settings = self.get_settings(user_id)
+        settings = self.get_settings(GLOBAL_USER_ID)
 
         def _ts(value):
             return to_iso(value) if value else None
@@ -261,13 +266,13 @@ class CommandService:
             for payload in normalized:
                 existing = (
                     db.query(Command)
-                    .filter(Command.user_id == user_id, Command.text == payload.text)
+                    .filter(Command.user_id == GLOBAL_USER_ID, Command.text == payload.text)
                     .one_or_none()
                 )
                 if payload.code:
                     self._ensure_unique_code(
                         db,
-                        user_id,
+                        GLOBAL_USER_ID,
                         payload.code,
                         exclude_command_id=existing.id if existing else None,
                     )
@@ -278,7 +283,7 @@ class CommandService:
                 else:
                     db.add(
                         Command(
-                            user_id=user_id,
+                            user_id=GLOBAL_USER_ID,
                             text=payload.text,
                             code=payload.code,
                             status=COMMAND_STATUS_ENABLED,
@@ -286,7 +291,7 @@ class CommandService:
                         )
                     )
             db.commit()
-        self._matcher.invalidate(user_id)
+        self._matcher.invalidate(GLOBAL_USER_ID)
         return len(normalized)
 
     def search_commands(
@@ -306,7 +311,7 @@ class CommandService:
         with self._get_session() as db:
             base_query = (
                 db.query(Command)
-                .filter(Command.user_id == user_id)
+                .filter(Command.user_id == GLOBAL_USER_ID)
                 .filter(Command.text.like(like_pattern))
                 .order_by(Command.created_at.asc(), Command.id.asc())
             )
@@ -348,11 +353,11 @@ class CommandService:
         with self._get_session() as db:
             settings = (
                 db.query(CommandSettings)
-                .filter(CommandSettings.user_id == user_id)
+                .filter(CommandSettings.user_id == GLOBAL_USER_ID)
                 .first()
             )
             if settings is None:
-                settings = CommandSettings(user_id=user_id)
+                settings = CommandSettings(user_id=GLOBAL_USER_ID)
                 db.add(settings)
             settings.enable_matching = enabled
             if threshold is not None:
@@ -367,14 +372,14 @@ class CommandService:
         with self._get_session() as db:
             command = (
                 db.query(Command)
-                .filter(Command.user_id == user_id, Command.id == command_id)
+                .filter(Command.user_id == GLOBAL_USER_ID, Command.id == command_id)
                 .one_or_none()
             )
             if not command:
                 return False
             db.delete(command)
             db.commit()
-        self._matcher.invalidate(user_id)
+        self._matcher.invalidate(GLOBAL_USER_ID)
         return True
 
     def update_command(
@@ -393,26 +398,26 @@ class CommandService:
         with self._get_session() as db:
             command = (
                 db.query(Command)
-                .filter(Command.user_id == user_id, Command.id == command_id)
+                .filter(Command.user_id == GLOBAL_USER_ID, Command.id == command_id)
                 .one_or_none()
             )
             if not command:
                 raise ValueError("Command not found")
             duplicate = (
                 db.query(Command)
-                .filter(Command.user_id == user_id, Command.text == new_text, Command.id != command_id)
+                .filter(Command.user_id == GLOBAL_USER_ID, Command.text == new_text, Command.id != command_id)
                 .first()
             )
             if duplicate:
                 raise ValueError("Command text already exists")
             if update_code:
-                self._ensure_unique_code(db, user_id, normalized_code, exclude_command_id=command.id)
+                self._ensure_unique_code(db, GLOBAL_USER_ID, normalized_code, exclude_command_id=command.id)
                 command.code = normalized_code
             command.text = new_text
             command.embedding = b""
             db.commit()
             db.refresh(command)
-        self._matcher.invalidate(user_id)
+        self._matcher.invalidate(GLOBAL_USER_ID)
 
         def _ts(value):
             return to_iso(value) if value else None
@@ -431,7 +436,7 @@ class CommandService:
         with self._get_session() as db:
             command = (
                 db.query(Command)
-                .filter(Command.user_id == user_id, Command.id == command_id)
+                .filter(Command.user_id == GLOBAL_USER_ID, Command.id == command_id)
                 .one_or_none()
             )
             if not command:
@@ -439,7 +444,7 @@ class CommandService:
             command.status = new_status
             db.commit()
             db.refresh(command)
-        self._matcher.invalidate(user_id)
+        self._matcher.invalidate(GLOBAL_USER_ID)
 
         def _ts(value):
             return to_iso(value) if value else None
@@ -465,13 +470,14 @@ class CommandService:
         if not content:
             return CommandMatchResult(False, None, 0.0)
 
-        current_settings = settings or self.get_settings(user_id)
+        # Ignore user scope; use global settings
+        current_settings = settings or self.get_settings(GLOBAL_USER_ID)
         if not current_settings.enable_matching:
             return CommandMatchResult(False, None, 0.0)
 
         threshold = threshold_override or current_settings.match_threshold or self.default_threshold
 
-        state = self._matcher.get_state(user_id)
+        state = self._matcher.get_state(GLOBAL_USER_ID)
         if not isinstance(state, Bm25MatcherState):
             raise ValueError("Unexpected matcher state for BM25 backend")
         return self._match_with_bm25(content, state, threshold)

@@ -567,21 +567,21 @@ class AsrSession:
         )
 
     async def _initialize_command_matching(self, token: Optional[str]):
-        self.command_user_id = None
+        # Enable global command matching regardless of authentication.
+        # Use a truthy placeholder user id; CommandService internally uses global scope.
+        self.command_user_id = 1
         self.command_matching_enabled = False
         self.command_match_threshold = None
 
-        if not token:
-            return
-        try:
-            user_payload = await validate_access_token(token)
-        except HTTPException as exc:
-            detail = getattr(exc, "detail", str(exc))
-            logger.warning("command.match auth_failed error=%s", detail)
-            return
+        # Try to validate token if provided (for logging/auth metrics only).
+        if token:
+            try:
+                await validate_access_token(token)
+            except HTTPException as exc:  # pragma: no cover - non-fatal for global matching
+                detail = getattr(exc, "detail", str(exc))
+                logger.warning("command.match auth_failed error=%s", detail)
 
-        settings = self.command_service.get_settings(user_payload.id)
-        self.command_user_id = user_payload.id
+        settings = self.command_service.get_settings(self.command_user_id)
         self.command_matching_enabled = bool(settings.enable_matching)
         self.command_match_threshold = settings.match_threshold or self.command_service.default_threshold
 
