@@ -40,7 +40,6 @@ def _normalize_code(value: Optional[str]) -> Optional[str]:
 def _normalize_commands(commands: Sequence["CommandCreatePayload"]) -> List["CommandCreatePayload"]:
     items: List[CommandCreatePayload] = []
     seen_texts = set()
-    seen_codes = set()
     for command in commands:
         text = command.text or ""
         clean = text.strip()
@@ -51,10 +50,6 @@ def _normalize_commands(commands: Sequence["CommandCreatePayload"]) -> List["Com
             continue
         seen_texts.add(key)
         normalized_code = _normalize_code(command.code)
-        if normalized_code:
-            if normalized_code in seen_codes:
-                raise ValueError("Duplicate command code in upload payload")
-            seen_codes.add(normalized_code)
         items.append(CommandCreatePayload(text=clean, code=normalized_code))
     return items
 
@@ -188,18 +183,8 @@ class CommandService:
         *,
         exclude_command_id: Optional[int] = None,
     ) -> None:
-        if not code:
-            return
-        query = (
-            db.query(Command)
-            .filter(Command.user_id == user_id)
-            .filter(Command.code == code)
-        )
-        if exclude_command_id is not None:
-            query = query.filter(Command.id != exclude_command_id)
-        exists = query.first()
-        if exists:
-            raise ValueError("Command code already exists")
+        # Allow multiple phrases sharing the same code. Keep as no-op for compatibility.
+        return
 
     def get_settings(self, user_id: int) -> CommandSettings:
         with self._get_session() as db:
@@ -269,13 +254,7 @@ class CommandService:
                     .filter(Command.user_id == GLOBAL_USER_ID, Command.text == payload.text)
                     .one_or_none()
                 )
-                if payload.code:
-                    self._ensure_unique_code(
-                        db,
-                        GLOBAL_USER_ID,
-                        payload.code,
-                        exclude_command_id=existing.id if existing else None,
-                    )
+                # Allow duplicate codes across phrases; skip uniqueness enforcement
                 if existing:
                     existing.embedding = b""
                     if payload.code is not None:
@@ -411,7 +390,7 @@ class CommandService:
             if duplicate:
                 raise ValueError("Command text already exists")
             if update_code:
-                self._ensure_unique_code(db, GLOBAL_USER_ID, normalized_code, exclude_command_id=command.id)
+                # Allow duplicate codes across phrases; skip uniqueness enforcement
                 command.code = normalized_code
             command.text = new_text
             command.embedding = b""
