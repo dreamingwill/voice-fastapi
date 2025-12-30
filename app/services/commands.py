@@ -1,4 +1,6 @@
 import os
+import re
+import unicodedata
 from dataclasses import dataclass
 from functools import lru_cache
 from threading import RLock
@@ -8,7 +10,7 @@ import numpy as np
 from rank_bm25 import BM25Okapi
 from rapidfuzz import fuzz
 from sqlalchemy.orm import Session
-from sqlalchemy import case
+from sqlalchemy import case, func
 
 try:
     import jieba
@@ -55,9 +57,67 @@ def _normalize_commands(commands: Sequence["CommandCreatePayload"]) -> List["Com
     return items
 
 
+# Numeral and synonym normalization helpers
+_CN_NUM_MAP = {
+    "零": "0",
+    "一": "1",
+    "二": "2",
+    "两": "2",
+    "三": "3",
+    "四": "4",
+    "五": "5",
+    "六": "6",
+    "七": "7",
+    "八": "8",
+    "九": "9",
+}
+
+
+def _normalize_numerals(text: str) -> str:
+    def _repl_minutes(m: re.Match[str]) -> str:
+        raw = m.group(1)
+        num = _CN_NUM_MAP.get(raw, raw)
+        return f"{num}分钟"
+
+    s = re.sub(r"([一二两三四五六七八九零])[\s\u3000]*分钟", _repl_minutes, text)
+    s = re.sub(r"([一二两三四五六七八九零])[\s\u3000]*分(?![\u4e00-\u9fa5])", _repl_minutes, s)
+    s = re.sub(r"(\d+)\s*分(?![\u4e00-\u9fa5])", r"\1分钟", s)
+    return s
+
+
+_SYNONYM_MAP = [
+    (r"[，,、]\s*", "，"),  # normalize commas
+    (r"^各号注意[，,、\s]*", ""),  # optional prefix removal
+    (r"(发射|点火)", "起飞"),
+    (r"(停止|结束)", "停"),
+    (r"模[非飞]", "模飞"),  # 模非/魔非 → 模飞（粗略）
+    (r"站综信", "站综合信息"),
+    (r"站综", "站综合信息"),
+    (r"起飞信号检", "起飞信号检查"),
+    (r"固定信息检", "固定信息检查"),
+    (r"(一次|第一次)综合检查", "第一次综合检查"),
+    (r"(二次|第二次)综合检查", "第二次综合检查"),
+    (r"模拟信息检", "模拟信息检查"),
+    (r"模飞检", "模飞检查"),
+    (r"检", "检查"),  # 单字“检”归一到“检查”
+]
+
+
+def _apply_synonyms(text: str) -> str:
+    s = text
+    for pat, rep in _SYNONYM_MAP:
+        s = re.sub(pat, rep, s)
+    # collapse duplicated "检查检查" → "检查"
+    s = re.sub(r"(检查)+", "检查", s)
+    return s
+
+
 def _normalize_for_matching(text: str) -> str:
-    # casefold handles uppercase English without affecting Chinese characters
-    return (text or "").strip().casefold()
+    s = unicodedata.normalize("NFKC", (text or "")).strip().casefold()
+    s = _normalize_numerals(s)
+    s = _apply_synonyms(s)
+    s = re.sub(r"[。！？!?:：；;]\s*", " ", s)
+    return s
 
 
 def _normalize_status(value: str) -> str:
@@ -213,12 +273,12 @@ class CommandService:
             base_query = (
                 db.query(Command)
                 .filter(Command.user_id == GLOBAL_USER_ID)
-                # Order by non-null code first, then code asc, then text, then id
+                # Order by non-null code first, then code asc, primary (min id) first, then text
                 .order_by(
                     case((Command.code.is_(None), 1), else_=0).asc(),
                     Command.code.asc(),
-                    Command.text.asc(),
                     Command.id.asc(),
+                    Command.text.asc(),
                 )
             )
             total = base_query.count()
@@ -229,6 +289,21 @@ class CommandService:
 
         def _ts(value):
             return to_iso(value) if value else None
+
+        # compute primary id and group size globally by code
+        with self._get_session() as db:
+            primaries = dict(
+                db.query(Command.code, func.min(Command.id))
+                .filter(Command.user_id == GLOBAL_USER_ID)
+                .group_by(Command.code)
+                .all()
+            )
+            sizes = dict(
+                db.query(Command.code, func.count(1))
+                .filter(Command.user_id == GLOBAL_USER_ID)
+                .group_by(Command.code)
+                .all()
+            )
 
         return {
             "enabled": bool(settings.enable_matching),
@@ -241,6 +316,8 @@ class CommandService:
                     "status": cmd.status,
                     "created_at": _ts(cmd.created_at),
                     "updated_at": _ts(cmd.updated_at),
+                    "is_primary": bool(primaries.get(cmd.code) == cmd.id),
+                    "group_size": int(sizes.get(cmd.code, 1)),
                 }
                 for cmd in commands
             ],
@@ -299,12 +376,12 @@ class CommandService:
                 db.query(Command)
                 .filter(Command.user_id == GLOBAL_USER_ID)
                 .filter(Command.text.like(like_pattern))
-                # Order by non-null code first, then code asc, then text, then id
+                # Order by non-null code first, then code asc, primary (min id) first, then text
                 .order_by(
                     case((Command.code.is_(None), 1), else_=0).asc(),
                     Command.code.asc(),
-                    Command.text.asc(),
                     Command.id.asc(),
+                    Command.text.asc(),
                 )
             )
             total = base_query.count()
@@ -315,6 +392,20 @@ class CommandService:
         def _ts(value):
             return to_iso(value) if value else None
 
+        with self._get_session() as db:
+            primaries = dict(
+                db.query(Command.code, func.min(Command.id))
+                .filter(Command.user_id == GLOBAL_USER_ID)
+                .group_by(Command.code)
+                .all()
+            )
+            sizes = dict(
+                db.query(Command.code, func.count(1))
+                .filter(Command.user_id == GLOBAL_USER_ID)
+                .group_by(Command.code)
+                .all()
+            )
+
         return {
             "items": [
                 {
@@ -324,6 +415,8 @@ class CommandService:
                     "status": row.status,
                     "created_at": _ts(row.created_at),
                     "updated_at": _ts(row.updated_at),
+                    "is_primary": bool(primaries.get(row.code) == row.id),
+                    "group_size": int(sizes.get(row.code, 1)),
                 }
                 for row in rows
             ],

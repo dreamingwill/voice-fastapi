@@ -193,6 +193,9 @@ class CommandItem(BaseModel):
     status: str
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+    # optional display aids for grouping/primary marking
+    is_primary: Optional[bool] = None
+    group_size: Optional[int] = None
 
 
 class CommandListResponse(BaseModel):
