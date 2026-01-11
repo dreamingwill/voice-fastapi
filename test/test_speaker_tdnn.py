@@ -182,16 +182,25 @@ def fix_num_frames(feats: np.ndarray, num_frames: int) -> np.ndarray:
 
 
 def resolve_core_mask(value: str) -> int:
+    def _get(name: str, fallback: Optional[int] = None) -> Optional[int]:
+        return getattr(RKNNLite, name, fallback)
+
     mapping = {
-        "auto": RKNNLite.NPU_CORE_AUTO,
-        "0": RKNNLite.NPU_CORE_0,
-        "1": RKNNLite.NPU_CORE_1,
-        "2": RKNNLite.NPU_CORE_2,
-        "01": RKNNLite.NPU_CORE_0_1,
-        "12": RKNNLite.NPU_CORE_1_2,
-        "012": RKNNLite.NPU_CORE_0_1_2,
+        "auto": _get("NPU_CORE_AUTO"),
+        "0": _get("NPU_CORE_0"),
+        "1": _get("NPU_CORE_1"),
+        "2": _get("NPU_CORE_2"),
+        "01": _get("NPU_CORE_0_1"),
+        "12": _get("NPU_CORE_1_2"),
+        "012": _get("NPU_CORE_0_1_2"),
     }
-    return mapping[value]
+    chosen = mapping.get(value)
+    if chosen is None:
+        fallback = _get("NPU_CORE_AUTO")
+        if fallback is None:
+            raise RuntimeError(f"RKNNLite does not expose core mask constants for '{value}'")
+        return fallback
+    return chosen
 
 
 def rknn_embed(model_path: str, feats: np.ndarray, core_mask: int) -> np.ndarray:
