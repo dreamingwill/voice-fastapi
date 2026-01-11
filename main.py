@@ -10,6 +10,9 @@ def main():
     if getattr(args, "database_url", None):
         os.environ["DATABASE_URL"] = args.database_url
         app_config.DATABASE_URL = args.database_url
+        from app.database import init_engine
+
+        init_engine(args.database_url)
     from app import create_app
 
     application = create_app(args)

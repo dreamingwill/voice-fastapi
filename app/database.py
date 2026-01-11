@@ -1,3 +1,5 @@
+from typing import Optional
+
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.ext.declarative import declarative_base
@@ -12,13 +14,21 @@ from .config import (
 from .utils import hash_password
 
 
-connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
-engine = create_engine(DATABASE_URL, connect_args=connect_args)
+_DATABASE_URL = DATABASE_URL
+
+
+def _build_engine(db_url: str):
+    connect_args = {"check_same_thread": False} if db_url.startswith("sqlite") else {}
+    return create_engine(db_url, connect_args=connect_args)
+
+
+engine = _build_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 
 def init_db() -> None:
+    init_engine()
     from . import models  # noqa: F401  Ensure models are registered
 
     Base.metadata.create_all(bind=engine)
@@ -26,6 +36,17 @@ def init_db() -> None:
     _ensure_command_code_column()
     _ensure_admin_account()
     _ensure_system_settings()
+
+
+def init_engine(db_url: Optional[str] = None) -> None:
+    global engine, SessionLocal, _DATABASE_URL
+
+    db_url = db_url or DATABASE_URL
+    if not db_url or db_url == _DATABASE_URL:
+        return
+    _DATABASE_URL = db_url
+    engine = _build_engine(db_url)
+    SessionLocal.configure(bind=engine)
 
 
 def _ensure_user_columns() -> None:
@@ -103,4 +124,4 @@ def _ensure_system_settings() -> None:
             db.commit()
 
 
-__all__ = ["engine", "SessionLocal", "Base", "init_db", "get_db"]
+__all__ = ["engine", "SessionLocal", "Base", "init_db", "init_engine", "get_db"]
