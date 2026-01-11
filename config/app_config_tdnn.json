@@ -13,6 +13,7 @@
   "speaker_rknn_frame_shift_ms": 10.0,
   "speaker_rknn_core": "auto",
   "speaker_rknn_l2_normalize": false,
+  "speaker_rknn_silent": true,
   "provider": "rknn",
   "blank_penalty": 1.0,
   "decoding_method": "greedy_search",

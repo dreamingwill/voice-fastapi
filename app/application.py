@@ -96,6 +96,7 @@ def create_app(args):
             rknn_frame_shift_ms=args.speaker_rknn_frame_shift_ms,
             rknn_core=args.speaker_rknn_core,
             rknn_l2_normalize=args.speaker_rknn_l2_normalize,
+            rknn_silent=args.speaker_rknn_silent,
         )
         logger.info(
             (

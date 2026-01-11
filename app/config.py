@@ -58,6 +58,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--speaker_rknn_frame_shift_ms", type=float, default=10.0)
     parser.add_argument("--speaker_rknn_core", type=str, default="auto")
     parser.add_argument("--speaker_rknn_l2_normalize", action="store_true", default=False)
+    parser.add_argument("--speaker_rknn_silent", action="store_true", default=False)
     parser.add_argument("--tokens", type=str)
     parser.add_argument("--encoder", type=str)
     parser.add_argument("--decoder", type=str)

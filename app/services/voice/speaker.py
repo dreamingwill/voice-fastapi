@@ -1,5 +1,7 @@
 import json
+import os
 import threading
+from contextlib import contextmanager
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -74,6 +76,7 @@ class RknnSpeakerEmbedder:
         frame_shift_ms: float = 10.0,
         core_mask: str = "auto",
         l2_normalize: bool = False,
+        silent: bool = False,
     ):
         self.model_path = model_path
         self.sample_rate = sample_rate
@@ -84,6 +87,7 @@ class RknnSpeakerEmbedder:
         self.frame_shift_ms = frame_shift_ms
         self.core_mask = core_mask
         self.l2_normalize = l2_normalize
+        self.silent = silent
         self._lock = threading.Lock()
         self._rknn = None
         self._runtime_ready = False
@@ -114,7 +118,8 @@ class RknnSpeakerEmbedder:
     def _ensure_runtime(self) -> None:
         if self._runtime_ready:
             return
-        self._rknn = _create_rknn_runtime(self.model_path, self.core_mask)
+        with _suppress_rknn_logs(self.silent):
+            self._rknn = _create_rknn_runtime(self.model_path, self.core_mask)
         self._runtime_ready = True
 
     def _rknn_embed(self, feats: np.ndarray) -> np.ndarray:
@@ -123,7 +128,8 @@ class RknnSpeakerEmbedder:
                 self._ensure_runtime()
             assert self._rknn is not None
             x = feats[np.newaxis, :, :].astype(np.float32)
-            out = self._rknn.inference(inputs=[x])[0]
+            with _suppress_rknn_logs(self.silent):
+                out = self._rknn.inference(inputs=[x])[0]
             emb = np.squeeze(out)
             return emb.astype(np.float32)
 
@@ -196,6 +202,7 @@ def create_speaker_embedder(
     rknn_frame_shift_ms: float,
     rknn_core: str,
     rknn_l2_normalize: bool,
+    rknn_silent: bool,
 ):
     if model_path.endswith(".rknn"):
         return RknnSpeakerEmbedder(
@@ -208,6 +215,7 @@ def create_speaker_embedder(
             frame_shift_ms=rknn_frame_shift_ms,
             core_mask=rknn_core,
             l2_normalize=rknn_l2_normalize,
+            silent=rknn_silent,
         )
     return SpeakerEmbedder(
         model_path=model_path,
@@ -306,6 +314,26 @@ def _create_rknn_runtime(model_path: str, core_mask: str):
     if ret != 0:
         raise RuntimeError(f"init_runtime failed: {ret}")
     return rknn
+
+
+@contextmanager
+def _suppress_rknn_logs(enabled: bool):
+    if not enabled:
+        yield
+        return
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    old_stdout = os.dup(1)
+    old_stderr = os.dup(2)
+    os.dup2(devnull, 1)
+    os.dup2(devnull, 2)
+    os.close(devnull)
+    try:
+        yield
+    finally:
+        os.dup2(old_stdout, 1)
+        os.dup2(old_stderr, 2)
+        os.close(old_stdout)
+        os.close(old_stderr)
 
 
 __all__ = [
