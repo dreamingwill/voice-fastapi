@@ -50,6 +50,57 @@ class SpeakerEmbedder:
         embedding = self.compute(stream)
         return np.asarray(embedding, dtype=np.float32)
 
+    def embed_from_waveform(self, samples: np.ndarray, sample_rate: int, force: bool = False) -> Optional[np.ndarray]:
+        stream = self.create_stream()
+        stream.accept_waveform(sample_rate=sample_rate, waveform=samples)
+        if force:
+            stream.input_finished()
+        if not self.is_ready(stream):
+            return None
+        embedding = self.compute(stream)
+        return np.asarray(embedding, dtype=np.float32)
+
+
+class RknnSpeakerEmbedder:
+    def __init__(
+        self,
+        model_path: str,
+        sample_rate: int = 16000,
+        threshold: float = 0.6,
+        feature_dim: int = 80,
+        num_frames: int = 300,
+        frame_length_ms: float = 25.0,
+        frame_shift_ms: float = 10.0,
+        core_mask: str = "auto",
+        l2_normalize: bool = False,
+    ):
+        self.model_path = model_path
+        self.sample_rate = sample_rate
+        self.threshold = threshold
+        self.feature_dim = feature_dim
+        self.num_frames = num_frames
+        self.frame_length_ms = frame_length_ms
+        self.frame_shift_ms = frame_shift_ms
+        self.core_mask = core_mask
+        self.l2_normalize = l2_normalize
+
+    def embed_from_waveform(self, samples: np.ndarray, sample_rate: int, force: bool = False) -> Optional[np.ndarray]:
+        if samples.size == 0:
+            return None
+        feats = _compute_fbank(
+            samples,
+            sample_rate,
+            feature_dim=self.feature_dim,
+            frame_length_ms=self.frame_length_ms,
+            frame_shift_ms=self.frame_shift_ms,
+        )
+        feats = _fix_num_frames(feats, self.num_frames)
+        emb = _rknn_embed(self.model_path, feats, self.core_mask)
+        if self.l2_normalize:
+            denom = np.linalg.norm(emb) + 1e-10
+            emb = emb / denom
+        return emb
+
 
 def cosine_similarity(a, b):
     denom = (np.linalg.norm(a) * np.linalg.norm(b)) + 1e-10
@@ -107,4 +158,137 @@ def identify_user(
     return matched, float(top_sim), topk
 
 
-__all__ = ["SpeakerEmbedder", "identify_user", "SpeakerCandidate"]
+def create_speaker_embedder(
+    model_path: str,
+    sample_rate: int,
+    threshold: float,
+    provider: str,
+    num_threads: int,
+    rknn_feature_dim: int,
+    rknn_num_frames: int,
+    rknn_frame_length_ms: float,
+    rknn_frame_shift_ms: float,
+    rknn_core: str,
+    rknn_l2_normalize: bool,
+):
+    if model_path.endswith(".rknn"):
+        return RknnSpeakerEmbedder(
+            model_path=model_path,
+            sample_rate=sample_rate,
+            threshold=threshold,
+            feature_dim=rknn_feature_dim,
+            num_frames=rknn_num_frames,
+            frame_length_ms=rknn_frame_length_ms,
+            frame_shift_ms=rknn_frame_shift_ms,
+            core_mask=rknn_core,
+            l2_normalize=rknn_l2_normalize,
+        )
+    return SpeakerEmbedder(
+        model_path=model_path,
+        sample_rate=sample_rate,
+        threshold=threshold,
+        provider=provider,
+        num_threads=num_threads,
+    )
+
+
+def _compute_fbank(
+    samples: np.ndarray,
+    sample_rate: int,
+    feature_dim: int,
+    frame_length_ms: float,
+    frame_shift_ms: float,
+) -> np.ndarray:
+    try:
+        import librosa
+    except ImportError as exc:
+        raise RuntimeError("librosa is required for RKNN speaker embeddings") from exc
+
+    frame_length = int(sample_rate * frame_length_ms / 1000.0)
+    frame_shift = int(sample_rate * frame_shift_ms / 1000.0)
+    if frame_length <= 0 or frame_shift <= 0:
+        raise RuntimeError("Frame length/shift must be positive")
+    n_fft = 1
+    while n_fft < frame_length:
+        n_fft <<= 1
+    mel = librosa.feature.melspectrogram(
+        y=samples,
+        sr=sample_rate,
+        n_fft=n_fft,
+        hop_length=frame_shift,
+        n_mels=feature_dim,
+        fmin=0.0,
+        fmax=sample_rate / 2.0,
+        power=2.0,
+    )
+    log_mel = np.log(np.maximum(mel, 1e-10))
+    log_mel -= np.mean(log_mel, axis=1, keepdims=True)
+    return log_mel.astype(np.float32)
+
+
+def _fix_num_frames(feats: np.ndarray, num_frames: int) -> np.ndarray:
+    if feats.ndim != 2:
+        raise RuntimeError("Expected feature shape (feature_dim, frames)")
+    feature_dim, frames = feats.shape
+    if frames == num_frames:
+        return feats
+    if frames < num_frames:
+        pad = np.zeros((feature_dim, num_frames - frames), dtype=feats.dtype)
+        return np.concatenate([feats, pad], axis=1)
+    start = max(0, (frames - num_frames) // 2)
+    return feats[:, start : start + num_frames]
+
+
+def _resolve_core_mask(value: str) -> int:
+    try:
+        from rknnlite.api import RKNNLite
+    except ImportError as exc:
+        raise RuntimeError("rknnlite is required for RKNN speaker embeddings") from exc
+
+    def _get(name: str, fallback: Optional[int] = None) -> Optional[int]:
+        return getattr(RKNNLite, name, fallback)
+
+    mapping = {
+        "auto": _get("NPU_CORE_AUTO"),
+        "0": _get("NPU_CORE_0"),
+        "1": _get("NPU_CORE_1"),
+        "2": _get("NPU_CORE_2"),
+        "01": _get("NPU_CORE_0_1"),
+        "12": _get("NPU_CORE_1_2"),
+        "012": _get("NPU_CORE_0_1_2"),
+    }
+    chosen = mapping.get(value)
+    if chosen is None:
+        fallback = _get("NPU_CORE_AUTO")
+        if fallback is None:
+            raise RuntimeError(f"RKNNLite does not expose core mask constants for '{value}'")
+        return fallback
+    return chosen
+
+
+def _rknn_embed(model_path: str, feats: np.ndarray, core_mask: str) -> np.ndarray:
+    try:
+        from rknnlite.api import RKNNLite
+    except ImportError as exc:
+        raise RuntimeError("rknnlite is required for RKNN speaker embeddings") from exc
+
+    rknn = RKNNLite()
+    ret = rknn.load_rknn(model_path)
+    if ret != 0:
+        raise RuntimeError(f"load_rknn failed: {ret}")
+    ret = rknn.init_runtime(core_mask=_resolve_core_mask(core_mask))
+    if ret != 0:
+        raise RuntimeError(f"init_runtime failed: {ret}")
+    x = feats[np.newaxis, :, :].astype(np.float32)
+    out = rknn.inference(inputs=[x])[0]
+    emb = np.squeeze(out)
+    return emb.astype(np.float32)
+
+
+__all__ = [
+    "SpeakerEmbedder",
+    "RknnSpeakerEmbedder",
+    "create_speaker_embedder",
+    "identify_user",
+    "SpeakerCandidate",
+]

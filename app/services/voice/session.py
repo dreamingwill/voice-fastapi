@@ -107,14 +107,9 @@ class AsrSession:
             return "unknown", 0.0, None, []
 
         eval_start = time.perf_counter()
-        st = self.embedder.create_stream()
-        st.accept_waveform(sample_rate=self.sample_rate_client, waveform=buf)
-        if force:
-            st.input_finished()
-        if not self.embedder.is_ready(st):
+        emb = self.embedder.embed_from_waveform(buf, self.sample_rate_client, force=force)
+        if emb is None or emb.size == 0:
             return "unknown", 0.0, None, []
-        emb = self.embedder.compute(st)
-        emb = np.asarray(emb, dtype=np.float32)
 
         matched, top_sim, topk = identify_user(emb, threshold=self.args.threshold)
         self._last_speaker_eval_latency_ms = int((time.perf_counter() - eval_start) * 1000)

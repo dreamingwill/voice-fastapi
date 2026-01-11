@@ -18,7 +18,7 @@ from .config import DEFAULT_ALLOWED_ORIGINS
 from .database import SessionLocal, init_db
 from .services.settings import load_system_settings_snapshot
 from .services.audio_enhancement import AudioEnhancementPipeline
-from .services.voice import SpeakerEmbedder
+from .services.voice import create_speaker_embedder
 from .utils import now_utc
 
 
@@ -83,24 +83,31 @@ def create_app(args):
         )
 
         app.state.asr_ready = True
-        app.state.embedder = SpeakerEmbedder(
+        app.state.embedder = create_speaker_embedder(
             model_path=args.model_path,
             sample_rate=args.sample_rate,
             threshold=args.threshold,
             provider=args.speaker_provider,
             num_threads=args.speaker_num_threads,
+            rknn_feature_dim=args.speaker_rknn_feature_dim,
+            rknn_num_frames=args.speaker_rknn_num_frames,
+            rknn_frame_length_ms=args.speaker_rknn_frame_length_ms,
+            rknn_frame_shift_ms=args.speaker_rknn_frame_shift_ms,
+            rknn_core=args.speaker_rknn_core,
+            rknn_l2_normalize=args.speaker_rknn_l2_normalize,
         )
         logger.info(
             (
-                "initializing embedder model=%s sample_rate=%s threshold=%.3f "
-                "min_spk_seconds=%.2f provider=%s threads=%s"
-            ),
+            "initializing embedder model=%s sample_rate=%s threshold=%.3f "
+            "min_spk_seconds=%.2f provider=%s threads=%s rknn_core=%s"
+        ),
             args.model_path,
             args.sample_rate,
             args.threshold,
             args.min_spk_seconds,
             args.speaker_provider,
             args.speaker_num_threads,
+            args.speaker_rknn_core,
         )
         try:
             yield
