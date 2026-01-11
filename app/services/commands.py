@@ -1,4 +1,6 @@
+import logging
 import os
+import re
 from dataclasses import dataclass
 from functools import lru_cache
 from threading import RLock
@@ -34,11 +36,23 @@ PHONETIC_WEIGHT = float(os.getenv("COMMAND_PHONETIC_WEIGHT", "0.4"))
 PHONETIC_MIN_TEXT_SCORE = float(os.getenv("COMMAND_PHONETIC_MIN_TEXT", "0.4"))
 PHONETIC_THRESHOLD = float(os.getenv("COMMAND_PHONETIC_THRESHOLD", "0.68"))
 PHONETIC_TONE = os.getenv("COMMAND_PHONETIC_TONE", "false").strip().lower() in {"1", "true", "yes", "on"}
+NUMERIC_MISMATCH_PENALTY = float(os.getenv("COMMAND_NUMERIC_MISMATCH_PENALTY", "0.4"))
+NUMERIC_MISSING_PENALTY = float(os.getenv("COMMAND_NUMERIC_MISSING_PENALTY", "0.6"))
 
 
 COMMAND_STATUS_ENABLED = "enabled"
 COMMAND_STATUS_DISABLED = "disabled"
 _VALID_COMMAND_STATUSES = {COMMAND_STATUS_ENABLED, COMMAND_STATUS_DISABLED}
+
+logger = logging.getLogger("command.match")
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s [%(levelname)s] %(name)s - %(message)s", "%Y-%m-%d %H:%M:%S")
+    )
+    logger.addHandler(handler)
+logger.setLevel(logging.INFO)
+logger.propagate = False
 
 
 def _normalize_code(value: Optional[str]) -> Optional[str]:
@@ -101,6 +115,107 @@ def _build_pinyin(text: str) -> str:
         if token:
             tokens.append(token)
     return " ".join(tokens)
+
+
+def _pinyin_token_count(text: str) -> int:
+    if not text:
+        return 0
+    return len([token for token in text.split() if token])
+
+
+def _pinyin_length_ratio(a: str, b: str) -> float:
+    count_a = _pinyin_token_count(a)
+    count_b = _pinyin_token_count(b)
+    if not count_a or not count_b:
+        return 0.0
+    return min(count_a, count_b) / max(count_a, count_b)
+
+
+_CHINESE_DIGITS = {
+    "零": 0,
+    "一": 1,
+    "二": 2,
+    "两": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+}
+
+
+def _parse_chinese_numeral(token: str) -> Optional[int]:
+    if not token:
+        return None
+    if token == "十":
+        return 10
+    if "十" in token:
+        parts = token.split("十", 1)
+        tens_token = parts[0]
+        ones_token = parts[1] if len(parts) > 1 else ""
+        tens = _CHINESE_DIGITS.get(tens_token, 1 if tens_token == "" else None)
+        ones = _CHINESE_DIGITS.get(ones_token, 0 if ones_token == "" else None)
+        if tens is None or ones is None:
+            return None
+        return tens * 10 + ones
+    if token in _CHINESE_DIGITS:
+        return _CHINESE_DIGITS[token]
+    return None
+
+
+def _parse_numeric_token(token: str) -> Optional[int]:
+    if not token:
+        return None
+    if token.isdigit():
+        return int(token)
+    return _parse_chinese_numeral(token)
+
+
+def _extract_numeric_tokens(text: str) -> Tuple[Tuple[int, ...], Tuple[int, ...]]:
+    if not text:
+        return (), ()
+    ordinals: List[int] = []
+    numbers: List[int] = []
+    for match in re.finditer(r"第([零一二三四五六七八九十两0-9]+)", text):
+        value = _parse_numeric_token(match.group(1))
+        if value is not None:
+            ordinals.append(value)
+    for match in re.finditer(r"([零一二三四五六七八九十两0-9]+)(次|遍|轮)", text):
+        value = _parse_numeric_token(match.group(1))
+        if value is not None:
+            ordinals.append(value)
+    for match in re.finditer(r"\d+", text):
+        numbers.append(int(match.group(0)))
+    for match in re.finditer(r"[零一二三四五六七八九十两]+", text):
+        value = _parse_chinese_numeral(match.group(0))
+        if value is not None:
+            numbers.append(value)
+    ordinals_sorted = tuple(sorted(set(ordinals)))
+    numbers_sorted = tuple(sorted(set(numbers)))
+    return ordinals_sorted, numbers_sorted
+
+
+def _numeric_factor(
+    query_ordinals: Tuple[int, ...],
+    query_numbers: Tuple[int, ...],
+    candidate_ordinals: Tuple[int, ...],
+    candidate_numbers: Tuple[int, ...],
+) -> float:
+    if query_ordinals or candidate_ordinals:
+        if query_ordinals and candidate_ordinals:
+            if query_ordinals != candidate_ordinals:
+                return NUMERIC_MISMATCH_PENALTY
+        else:
+            return NUMERIC_MISSING_PENALTY
+    if query_numbers or candidate_numbers:
+        if query_numbers and candidate_numbers:
+            if query_numbers != candidate_numbers:
+                return NUMERIC_MISMATCH_PENALTY
+        else:
+            return NUMERIC_MISSING_PENALTY
+    return 1.0
 
 
 @dataclass
@@ -513,46 +628,173 @@ class CommandService:
         if not state.texts or state.bm25 is None:
             return CommandMatchResult(False, None, 0.0)
         normalized_query = _normalize_for_matching(content)
+        query_pinyin = _build_pinyin(content) if PHONETIC_ENABLED else ""
         query_tokens = _tokenize(content)
-        if not query_tokens:
+        query_ordinals, query_numbers = _extract_numeric_tokens(content)
+        if not query_tokens and not query_pinyin:
             return CommandMatchResult(False, None, 0.0)
-        scores = np.asarray(state.bm25.get_scores(query_tokens), dtype=np.float32)
-        if scores.size == 0:
+        candidate_indices = set()
+        if state.bm25 is not None and query_tokens:
+            scores = np.asarray(state.bm25.get_scores(query_tokens), dtype=np.float32)
+            if scores.size:
+                top_k = min(BM25_TOP_K, scores.size)
+                bm25_indices = np.argsort(scores)[-top_k:][::-1]
+                candidate_indices.update(int(idx) for idx in bm25_indices)
+        pinyin_scores: Optional[np.ndarray] = None
+        if PHONETIC_ENABLED and query_pinyin:
+            if state.pinyin_texts:
+                pinyin_values = [
+                    float(fuzz.token_set_ratio(query_pinyin, candidate_pinyin))
+                    * _pinyin_length_ratio(query_pinyin, candidate_pinyin)
+                    if candidate_pinyin
+                    else 0.0
+                    for candidate_pinyin in state.pinyin_texts
+                ]
+                pinyin_scores = np.asarray(pinyin_values, dtype=np.float32)
+                if pinyin_scores.size:
+                    max_pinyin_score = float(np.max(pinyin_scores))
+                    if max_pinyin_score > 0.0:
+                        top_k = min(BM25_TOP_K, pinyin_scores.size)
+                        phonetic_indices = np.argsort(pinyin_scores)[-top_k:][::-1]
+                        candidate_indices.update(int(idx) for idx in phonetic_indices)
+        if not candidate_indices:
+            logger.info("command.match no_candidate query=%s", content)
             return CommandMatchResult(False, None, 0.0)
-        top_k = min(BM25_TOP_K, scores.size)
-        sorted_indices = np.argsort(scores)[-top_k:][::-1]
         best_score = 0.0
         best_text_score = 0.0
+        best_pinyin_score: Optional[float] = None
+        best_final_score = 0.0
         best_text: Optional[str] = None
         best_code: Optional[str] = None
         best_id: Optional[int] = None
-        query_pinyin = _build_pinyin(content) if PHONETIC_ENABLED else ""
-        for idx in sorted_indices:
-            idx_int = int(idx)
+        best_candidate_pinyin: Optional[str] = None
+        best_numeric_factor = 1.0
+        best_query_ordinals: Tuple[int, ...] = query_ordinals
+        best_query_numbers: Tuple[int, ...] = query_numbers
+        best_candidate_ordinals: Tuple[int, ...] = ()
+        best_candidate_numbers: Tuple[int, ...] = ()
+        for idx_int in candidate_indices:
             candidate_text = state.texts[idx_int]
             candidate_normalized = state.normalized_texts[idx_int]
             text_score = float(fuzz.token_set_ratio(normalized_query, candidate_normalized))
             final_score = text_score
+            pinyin_score: Optional[float] = None
+            candidate_pinyin: Optional[str] = None
             if PHONETIC_ENABLED and query_pinyin:
                 candidate_pinyin = state.pinyin_texts[idx_int] if idx_int < len(state.pinyin_texts) else ""
-                if candidate_pinyin and text_score / 100.0 >= PHONETIC_MIN_TEXT_SCORE:
-                    pinyin_score = float(fuzz.token_set_ratio(query_pinyin, candidate_pinyin))
-                    final_score = (1.0 - PHONETIC_WEIGHT) * text_score + PHONETIC_WEIGHT * pinyin_score
+                if candidate_pinyin:
+                    if pinyin_scores is not None:
+                        pinyin_score = float(pinyin_scores[idx_int])
+                    else:
+                        pinyin_score = float(fuzz.token_set_ratio(query_pinyin, candidate_pinyin)) * _pinyin_length_ratio(
+                            query_pinyin, candidate_pinyin
+                        )
+                    blended_score = (1.0 - PHONETIC_WEIGHT) * text_score + PHONETIC_WEIGHT * pinyin_score
+                    final_score = max(text_score, pinyin_score, blended_score)
+            candidate_ordinals, candidate_numbers = _extract_numeric_tokens(candidate_text)
+            numeric_factor = _numeric_factor(
+                query_ordinals,
+                query_numbers,
+                candidate_ordinals,
+                candidate_numbers,
+            )
+            final_score *= numeric_factor
             if final_score > best_score:
                 best_score = final_score
                 best_text_score = text_score
+                best_pinyin_score = pinyin_score
+                best_final_score = final_score
                 best_text = candidate_text
                 best_code = state.command_codes[idx_int] if idx_int < len(state.command_codes) else None
                 best_id = state.command_ids[idx_int] if idx_int < len(state.command_ids) else None
-        normalized = best_score / 100.0
+                best_candidate_pinyin = candidate_pinyin if pinyin_score is not None else None
+                best_numeric_factor = numeric_factor
+                best_candidate_ordinals = candidate_ordinals
+                best_candidate_numbers = candidate_numbers
+        normalized = best_final_score / 100.0
         if not best_text:
+            logger.info("command.match no_candidate query=%s", content)
             return CommandMatchResult(False, None, normalized)
-        if best_text_score / 100.0 >= threshold:
-            return CommandMatchResult(True, best_text, best_text_score / 100.0, command_id=best_id, command_code=best_code)
-        if PHONETIC_ENABLED and normalized >= PHONETIC_THRESHOLD:
+        text_norm = best_text_score / 100.0
+        pinyin_norm = best_pinyin_score / 100.0 if best_pinyin_score is not None else None
+        if text_norm >= threshold:
+            logger.info(
+                "command.match result=matched type=text query=%s candidate=%s id=%s code=%s text_score=%.2f final_score=%.2f pinyin_score=%s numeric_factor=%.2f threshold=%.2f query_pinyin=%s candidate_pinyin=%s query_ordinals=%s candidate_ordinals=%s query_numbers=%s candidate_numbers=%s",
+                content,
+                best_text,
+                best_id,
+                best_code,
+                best_text_score,
+                best_final_score,
+                f"{best_pinyin_score:.2f}" if best_pinyin_score is not None else "n/a",
+                best_numeric_factor,
+                threshold,
+                query_pinyin or "",
+                best_candidate_pinyin or "",
+                ",".join(str(value) for value in best_query_ordinals),
+                ",".join(str(value) for value in best_candidate_ordinals),
+                ",".join(str(value) for value in best_query_numbers),
+                ",".join(str(value) for value in best_candidate_numbers),
+            )
+            return CommandMatchResult(True, best_text, normalized, command_id=best_id, command_code=best_code)
+        if PHONETIC_ENABLED and pinyin_norm is not None and pinyin_norm >= PHONETIC_THRESHOLD:
+            logger.info(
+                "command.match result=matched type=phonetic query=%s candidate=%s id=%s code=%s text_score=%.2f final_score=%.2f pinyin_score=%s numeric_factor=%.2f threshold=%.2f query_pinyin=%s candidate_pinyin=%s query_ordinals=%s candidate_ordinals=%s query_numbers=%s candidate_numbers=%s",
+                content,
+                best_text,
+                best_id,
+                best_code,
+                best_text_score,
+                best_final_score,
+                f"{best_pinyin_score:.2f}" if best_pinyin_score is not None else "n/a",
+                best_numeric_factor,
+                threshold,
+                query_pinyin or "",
+                best_candidate_pinyin or "",
+                ",".join(str(value) for value in best_query_ordinals),
+                ",".join(str(value) for value in best_candidate_ordinals),
+                ",".join(str(value) for value in best_query_numbers),
+                ",".join(str(value) for value in best_candidate_numbers),
+            )
             return CommandMatchResult(True, best_text, normalized, command_id=best_id, command_code=best_code)
         if normalized < threshold:
+            logger.info(
+                "command.match result=not_matched type=below_threshold query=%s candidate=%s id=%s code=%s text_score=%.2f final_score=%.2f pinyin_score=%s numeric_factor=%.2f threshold=%.2f query_pinyin=%s candidate_pinyin=%s query_ordinals=%s candidate_ordinals=%s query_numbers=%s candidate_numbers=%s",
+                content,
+                best_text,
+                best_id,
+                best_code,
+                best_text_score,
+                best_final_score,
+                f"{best_pinyin_score:.2f}" if best_pinyin_score is not None else "n/a",
+                best_numeric_factor,
+                threshold,
+                query_pinyin or "",
+                best_candidate_pinyin or "",
+                ",".join(str(value) for value in best_query_ordinals),
+                ",".join(str(value) for value in best_candidate_ordinals),
+                ",".join(str(value) for value in best_query_numbers),
+                ",".join(str(value) for value in best_candidate_numbers),
+            )
             return CommandMatchResult(False, None, normalized)
+        logger.info(
+            "command.match result=matched type=blend query=%s candidate=%s id=%s code=%s text_score=%.2f final_score=%.2f pinyin_score=%s numeric_factor=%.2f threshold=%.2f query_pinyin=%s candidate_pinyin=%s query_ordinals=%s candidate_ordinals=%s query_numbers=%s candidate_numbers=%s",
+            content,
+            best_text,
+            best_id,
+            best_code,
+            best_text_score,
+            best_final_score,
+            f"{best_pinyin_score:.2f}" if best_pinyin_score is not None else "n/a",
+            best_numeric_factor,
+            threshold,
+            query_pinyin or "",
+            best_candidate_pinyin or "",
+            ",".join(str(value) for value in best_query_ordinals),
+            ",".join(str(value) for value in best_candidate_ordinals),
+            ",".join(str(value) for value in best_query_numbers),
+            ",".join(str(value) for value in best_candidate_numbers),
+        )
         return CommandMatchResult(True, best_text, normalized, command_id=best_id, command_code=best_code)
 
 
