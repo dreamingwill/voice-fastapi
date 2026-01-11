@@ -1,3 +1,4 @@
+import os
 from typing import Optional
 
 from sqlalchemy import create_engine, inspect, text
@@ -47,6 +48,24 @@ def init_engine(db_url: Optional[str] = None) -> None:
     _DATABASE_URL = db_url
     engine = _build_engine(db_url)
     SessionLocal.configure(bind=engine)
+    _ensure_sqlite_file(engine)
+
+
+def _ensure_sqlite_file(active_engine) -> None:
+    try:
+        url = active_engine.url
+    except Exception:
+        return
+    if url.drivername != "sqlite":
+        return
+    path = url.database
+    if not path or path == ":memory:":
+        return
+    abs_path = os.path.abspath(path)
+    os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+    if not os.path.exists(abs_path):
+        with open(abs_path, "a", encoding="utf-8"):
+            pass
 
 
 def _ensure_user_columns() -> None:
