@@ -80,6 +80,8 @@ def identify_user(
                 continue
             if stored_embedding.size == 0:
                 continue
+            if stored_embedding.shape != query_embedding.shape:
+                continue
             sim = cosine_similarity(query_embedding, stored_embedding)
             candidate: SpeakerCandidate = {
                 "id": user.id,
