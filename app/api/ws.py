@@ -81,6 +81,10 @@ async def ws_identify(websocket: WebSocket):
             pass
         raise
     finally:
+        try:
+            session._flush_and_reset_stream()
+        except Exception:
+            pass
         if metrics is not None:
             metrics["active_sessions"] = max(0, int(metrics.get("active_sessions", 1)) - 1)
         finalize_transcript(session_id=session_id, status="aborted")

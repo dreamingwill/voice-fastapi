@@ -14,7 +14,7 @@ from ..transcripts import append_transcript_segment, finalize_transcript
 from ...auth import validate_access_token
 from ..audio_enhancement import AudioEnhancementPipeline, EnhancementConfig
 from ..commands import get_command_service
-from .recognizer import pcm_bytes_to_float32
+from .recognizer import create_recognizer, pcm_bytes_to_float32
 from .speaker import SpeakerCandidate, SpeakerEmbedder, identify_user
 
 logger = logging.getLogger("asr.session")
@@ -37,7 +37,26 @@ class AsrSession:
         self.ws = websocket
         self.app = app
         self.args = app.state.args
-        self.recognizer = app.state.recognizer
+        self.recognizer = create_recognizer(
+            tokens=self.args.tokens,
+            encoder=self.args.encoder,
+            decoder=self.args.decoder,
+            joiner=self.args.joiner,
+            num_threads=self.args.num_threads,
+            sample_rate=self.args.sample_rate,
+            feature_dim=self.args.feature_dim,
+            decoding_method=self.args.decoding_method,
+            max_active_paths=self.args.max_active_paths,
+            provider=self.args.provider,
+            hotwords_file=self.args.hotwords_file,
+            hotwords_score=self.args.hotwords_score,
+            blank_penalty=self.args.blank_penalty,
+            hr_rule_fsts=self.args.hr_rule_fsts,
+            hr_lexicon=self.args.hr_lexicon,
+            rule1_min_trailing_silence=self.args.rule1_min_trailing_silence,
+            rule2_min_trailing_silence=self.args.rule2_min_trailing_silence,
+            rule3_min_utterance_length=self.args.rule3_min_utterance_length,
+        )
         self.embedder: SpeakerEmbedder = app.state.embedder
         settings = getattr(app.state, "system_settings", None)
         self.speaker_recognition_enabled = bool(getattr(settings, "enable_speaker_recognition", True))
@@ -429,6 +448,16 @@ class AsrSession:
                 cand or self.current_speaker_candidate,
             )
         finalize_transcript(session_id=self.session_id, status="completed")
+        self._flush_and_reset_stream()
+
+    def _flush_and_reset_stream(self) -> None:
+        try:
+            self.stream.input_finished()
+            while self.recognizer.is_ready(self.stream):
+                self.recognizer.decode_stream(self.stream)
+            self.recognizer.reset(self.stream)
+        except Exception as exc:
+            logger.warning("asr.stream.cleanup failed error=%s", exc)
 
     async def handle_text_message(self, raw: str) -> bool:
         text = raw.strip()

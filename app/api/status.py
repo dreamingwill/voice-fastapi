@@ -17,7 +17,7 @@ router = APIRouter(prefix="/api/status", tags=["status"])
 async def health(request: Request):
     start_time: Optional[datetime] = getattr(request.app.state, "start_time", None)
     uptime = int((now_utc() - start_time).total_seconds()) if start_time else 0
-    asr_ready = getattr(request.app.state, "recognizer", None) is not None
+    asr_ready = bool(getattr(request.app.state, "asr_ready", False))
     speaker_ready = getattr(request.app.state, "embedder", None) is not None
     db_status = "ok"
     try:

@@ -18,7 +18,7 @@ from .config import DEFAULT_ALLOWED_ORIGINS
 from .database import SessionLocal, init_db
 from .services.settings import load_system_settings_snapshot
 from .services.audio_enhancement import AudioEnhancementPipeline
-from .services.voice import SpeakerEmbedder, create_recognizer
+from .services.voice import SpeakerEmbedder
 from .utils import now_utc
 
 
@@ -82,26 +82,7 @@ def create_app(args):
             args.rule3_min_utterance_length,
         )
 
-        app.state.recognizer = create_recognizer(
-            tokens=args.tokens,
-            encoder=args.encoder,
-            decoder=args.decoder,
-            joiner=args.joiner,
-            num_threads=args.num_threads,
-            sample_rate=args.sample_rate,
-            feature_dim=args.feature_dim,
-            decoding_method=args.decoding_method,
-            max_active_paths=args.max_active_paths,
-            provider=args.provider,
-            hotwords_file=args.hotwords_file,
-            hotwords_score=args.hotwords_score,
-            blank_penalty=args.blank_penalty,
-            hr_rule_fsts=args.hr_rule_fsts,
-            hr_lexicon=args.hr_lexicon,
-            rule1_min_trailing_silence=args.rule1_min_trailing_silence,
-            rule2_min_trailing_silence=args.rule2_min_trailing_silence,
-            rule3_min_utterance_length=args.rule3_min_utterance_length,
-        )
+        app.state.asr_ready = True
         app.state.embedder = SpeakerEmbedder(
             model_path=args.model_path,
             sample_rate=args.sample_rate,
@@ -117,7 +98,7 @@ def create_app(args):
         try:
             yield
         finally:
-            app.state.recognizer = None
+            app.state.asr_ready = False
             app.state.embedder = None
             app.state.enhancement_pipeline = None
 
