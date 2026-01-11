@@ -1,6 +1,6 @@
 import io
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import soundfile as sf
@@ -19,8 +19,14 @@ from ..schemas import (
     UsersListResponse,
 )
 from ..services.events import record_event_log
+from ..services.voice.speaker import l2_normalize
 
 router = APIRouter(prefix="/api/users", tags=["users"])
+
+VOICEPRINT_SEGMENT_SECONDS = 2.5
+VOICEPRINT_HOP_SECONDS = 1.5
+VOICEPRINT_MIN_RMS = 0.01
+VOICEPRINT_MIN_EMB_NORM = 1e-3
 
 
 def _normalize_status(value: Optional[str]) -> str:
@@ -42,6 +48,33 @@ def _user_to_response(user: User) -> UserResponse:
         status=user.status or "enabled",
         has_voiceprint=bool(user.embedding),
     )
+
+
+def _slice_audio(samples: np.ndarray, sample_rate: int) -> Iterable[Tuple[np.ndarray, int]]:
+    seg_len = max(1, int(sample_rate * VOICEPRINT_SEGMENT_SECONDS))
+    hop_len = max(1, int(sample_rate * VOICEPRINT_HOP_SECONDS))
+    total = samples.shape[0]
+    if total <= seg_len:
+        yield samples, sample_rate
+        return
+    for start in range(0, total - seg_len + 1, hop_len):
+        yield samples[start : start + seg_len], sample_rate
+
+
+def _is_valid_segment(segment: np.ndarray) -> bool:
+    if segment.size == 0:
+        return False
+    rms = float(np.sqrt(np.mean(np.square(segment))))
+    return rms >= VOICEPRINT_MIN_RMS
+
+
+def _aggregate_embeddings(embeddings: List[np.ndarray]) -> np.ndarray:
+    if not embeddings:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No valid audio segments")
+    stacked = np.stack(embeddings, axis=0)
+    avg = np.mean(stacked, axis=0)
+    avg = l2_normalize(avg)
+    return avg
 
 
 @router.get("", response_model=UsersListResponse)
@@ -297,7 +330,7 @@ async def aggregate_voiceprint(
         )
 
     embedder = request.app.state.embedder
-    ans = None
+    embeddings: List[np.ndarray] = []
     for f in files:
         raw = await f.read()
         if not raw:
@@ -317,18 +350,19 @@ async def aggregate_voiceprint(
 
         data = data[:, 0]
         samples = np.ascontiguousarray(data, dtype=np.float32)
-        embedding = embedder.embed(samples, sample_rate)
+        for segment, sr in _slice_audio(samples, sample_rate):
+            if not _is_valid_segment(segment):
+                continue
+            embedding = embedder.embed(segment, sr)
+            if embedding is None or embedding.size == 0:
+                continue
+            if np.linalg.norm(embedding) < VOICEPRINT_MIN_EMB_NORM:
+                continue
+            embedding = l2_normalize(embedding)
+            embeddings.append(embedding)
 
-        if ans is None:
-            ans = embedding
-        else:
-            ans += embedding
-
-    if ans is None:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to compute embeddings")
-
-    ans = ans / len(files)
-    user.embedding = json.dumps(ans.tolist())
+    final_embedding = _aggregate_embeddings(embeddings)
+    user.embedding = json.dumps(final_embedding.tolist())
 
     db.commit()
     db.refresh(user)

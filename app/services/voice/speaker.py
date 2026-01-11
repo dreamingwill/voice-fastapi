@@ -139,12 +139,20 @@ def cosine_similarity(a, b):
     return float(np.dot(a, b) / denom)
 
 
+def l2_normalize(embedding: np.ndarray) -> np.ndarray:
+    if embedding is None or embedding.size == 0:
+        return embedding
+    denom = np.linalg.norm(embedding) + 1e-10
+    return (embedding / denom).astype(np.float32)
+
+
 def identify_user(
     query_embedding: np.ndarray, threshold: float
 ) -> Tuple[Optional[SpeakerCandidate], float, List[SpeakerCandidate]]:
     sims: List[Tuple[SpeakerCandidate, float]] = []
     if query_embedding is None or query_embedding.size == 0:
         return None, 0.0, []
+    query_embedding = l2_normalize(query_embedding)
 
     with SessionLocal() as db:
         users = (
@@ -165,6 +173,7 @@ def identify_user(
                 continue
             if stored_embedding.shape != query_embedding.shape:
                 continue
+            stored_embedding = l2_normalize(stored_embedding)
             sim = cosine_similarity(query_embedding, stored_embedding)
             candidate: SpeakerCandidate = {
                 "id": user.id,
@@ -342,4 +351,5 @@ __all__ = [
     "create_speaker_embedder",
     "identify_user",
     "SpeakerCandidate",
+    "l2_normalize",
 ]
