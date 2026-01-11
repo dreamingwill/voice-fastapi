@@ -14,6 +14,11 @@ try:
     import jieba
 except ImportError:  # pragma: no cover - dependency installed in production
     jieba = None
+try:
+    from pypinyin import Style, pinyin
+except ImportError:  # pragma: no cover - dependency installed in production
+    pinyin = None
+    Style = None
 
 from ..database import SessionLocal
 from ..models import Command, CommandSettings
@@ -24,6 +29,11 @@ DEFAULT_MATCH_THRESHOLD = float(os.getenv("COMMAND_MATCH_THRESHOLD", "0.75"))
 GLOBAL_USER_ID = int(os.getenv("GLOBAL_COMMAND_USER_ID", "0"))
 
 BM25_TOP_K = max(1, int(os.getenv("COMMAND_BM25_TOPK", "10")))
+PHONETIC_ENABLED = os.getenv("COMMAND_PHONETIC_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+PHONETIC_WEIGHT = float(os.getenv("COMMAND_PHONETIC_WEIGHT", "0.4"))
+PHONETIC_MIN_TEXT_SCORE = float(os.getenv("COMMAND_PHONETIC_MIN_TEXT", "0.4"))
+PHONETIC_THRESHOLD = float(os.getenv("COMMAND_PHONETIC_THRESHOLD", "0.68"))
+PHONETIC_TONE = os.getenv("COMMAND_PHONETIC_TONE", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 
 COMMAND_STATUS_ENABLED = "enabled"
@@ -77,6 +87,22 @@ def _tokenize(text: str) -> List[str]:
     return [char for char in content if not char.isspace()]
 
 
+def _build_pinyin(text: str) -> str:
+    if not text:
+        return ""
+    if pinyin is None:
+        return ""
+    style = Style.TONE3 if PHONETIC_TONE else Style.NORMAL
+    tokens = []
+    for item in pinyin(text, style=style, strict=False, errors="ignore"):
+        if not item:
+            continue
+        token = (item[0] or "").strip().casefold()
+        if token:
+            tokens.append(token)
+    return " ".join(tokens)
+
+
 @dataclass
 class CommandCreatePayload:
     text: str
@@ -96,6 +122,7 @@ class CommandMatchResult:
 class Bm25MatcherState:
     texts: Tuple[str, ...]
     normalized_texts: Tuple[str, ...]
+    pinyin_texts: Tuple[str, ...]
     command_ids: Tuple[int, ...]
     command_codes: Tuple[Optional[str], ...]
     bm25: Optional[BM25Okapi]
@@ -119,12 +146,14 @@ class CommandMatcher:
     def _load_bm25_state(self, rows: Sequence[Command]) -> Bm25MatcherState:
         texts = tuple(row.text for row in rows)
         normalized_texts = tuple(_normalize_for_matching(text) for text in texts)
+        pinyin_texts = tuple(_build_pinyin(text) for text in texts)
         command_ids = tuple(int(row.id) for row in rows)
         command_codes = tuple(row.code for row in rows)
         if not rows:
             return Bm25MatcherState(
                 texts=texts,
                 normalized_texts=normalized_texts,
+                pinyin_texts=pinyin_texts,
                 command_ids=command_ids,
                 command_codes=command_codes,
                 bm25=None,
@@ -134,6 +163,7 @@ class CommandMatcher:
         return Bm25MatcherState(
             texts=texts,
             normalized_texts=normalized_texts,
+            pinyin_texts=pinyin_texts,
             command_ids=command_ids,
             command_codes=command_codes,
             bm25=model,
@@ -492,21 +522,36 @@ class CommandService:
         top_k = min(BM25_TOP_K, scores.size)
         sorted_indices = np.argsort(scores)[-top_k:][::-1]
         best_score = 0.0
+        best_text_score = 0.0
         best_text: Optional[str] = None
         best_code: Optional[str] = None
         best_id: Optional[int] = None
+        query_pinyin = _build_pinyin(content) if PHONETIC_ENABLED else ""
         for idx in sorted_indices:
             idx_int = int(idx)
             candidate_text = state.texts[idx_int]
             candidate_normalized = state.normalized_texts[idx_int]
-            fuzzy_score = float(fuzz.token_set_ratio(normalized_query, candidate_normalized))
-            if fuzzy_score > best_score:
-                best_score = fuzzy_score
+            text_score = float(fuzz.token_set_ratio(normalized_query, candidate_normalized))
+            final_score = text_score
+            if PHONETIC_ENABLED and query_pinyin:
+                candidate_pinyin = state.pinyin_texts[idx_int] if idx_int < len(state.pinyin_texts) else ""
+                if candidate_pinyin and text_score / 100.0 >= PHONETIC_MIN_TEXT_SCORE:
+                    pinyin_score = float(fuzz.token_set_ratio(query_pinyin, candidate_pinyin))
+                    final_score = (1.0 - PHONETIC_WEIGHT) * text_score + PHONETIC_WEIGHT * pinyin_score
+            if final_score > best_score:
+                best_score = final_score
+                best_text_score = text_score
                 best_text = candidate_text
                 best_code = state.command_codes[idx_int] if idx_int < len(state.command_codes) else None
                 best_id = state.command_ids[idx_int] if idx_int < len(state.command_ids) else None
         normalized = best_score / 100.0
-        if not best_text or normalized < threshold:
+        if not best_text:
+            return CommandMatchResult(False, None, normalized)
+        if best_text_score / 100.0 >= threshold:
+            return CommandMatchResult(True, best_text, best_text_score / 100.0, command_id=best_id, command_code=best_code)
+        if PHONETIC_ENABLED and normalized >= PHONETIC_THRESHOLD:
+            return CommandMatchResult(True, best_text, normalized, command_id=best_id, command_code=best_code)
+        if normalized < threshold:
             return CommandMatchResult(False, None, normalized)
         return CommandMatchResult(True, best_text, normalized, command_id=best_id, command_code=best_code)
 
