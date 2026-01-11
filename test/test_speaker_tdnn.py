@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Utility script for validating the speaker embedding model without running FastAPI.
+Utility script for validating the RKNN speaker embedding model without running FastAPI.
 
 Example:
-    python test/test_speaker.py \
+    python test/test_speaker_tdnn.py \
         --audio tmp/zrh_voice.wav \
-        --config config/app_config.json
+        --config config/app_config_tdnn.json
 """
 
 import argparse
@@ -24,7 +24,7 @@ if str(ROOT) not in sys.path:
 from app.database import init_db  # noqa: E402
 from app.services.voice.speaker import SpeakerEmbedder, identify_user  # noqa: E402
 
-DEFAULT_CONFIG = Path("config/app_config.json")
+DEFAULT_CONFIG = Path("config/app_config_tdnn.json")
 
 
 def load_config(path: Optional[str]) -> Dict[str, Any]:
@@ -44,14 +44,14 @@ def load_config(path: Optional[str]) -> Dict[str, Any]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser("Speaker model tester")
+    parser = argparse.ArgumentParser("Speaker RKNN model tester")
     parser.add_argument("--audio", "-a", required=True, help="Path to a mono/stereo audio file (wav/flac)")
     parser.add_argument(
         "--config",
         default=str(DEFAULT_CONFIG),
-        help="Optional JSON config file that provides defaults (default: config/app_config.json)",
+        help="Optional JSON config file that provides defaults (default: config/app_config_tdnn.json)",
     )
-    parser.add_argument("--model-path", help="Override the speaker embedding ONNX path")
+    parser.add_argument("--model-path", help="Override the speaker embedding RKNN path")
     parser.add_argument("--sample-rate", type=int, help="Expected sample rate for the model")
     parser.add_argument("--threshold", type=float, help="Similarity threshold for accepting a speaker")
     parser.add_argument("--speaker-provider", help="Override provider for speaker embedding model")
@@ -113,8 +113,8 @@ def main():
         raise RuntimeError("Model path not provided via --model-path or config file")
     sample_rate = args.sample_rate or cfg.get("sample_rate", 16000)
     threshold = args.threshold if args.threshold is not None else cfg.get("threshold", 0.6)
-    speaker_provider = args.speaker_provider or cfg.get("speaker_provider", "cpu")
-    speaker_num_threads = args.speaker_num_threads or cfg.get("speaker_num_threads", 4)
+    speaker_provider = args.speaker_provider or cfg.get("speaker_provider", "rknn")
+    speaker_num_threads = args.speaker_num_threads or cfg.get("speaker_num_threads", 1)
 
     audio_path = Path(args.audio).expanduser()
     audio, original_sr = load_audio(audio_path)

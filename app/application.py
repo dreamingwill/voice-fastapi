@@ -87,13 +87,20 @@ def create_app(args):
             model_path=args.model_path,
             sample_rate=args.sample_rate,
             threshold=args.threshold,
+            provider=args.speaker_provider,
+            num_threads=args.speaker_num_threads,
         )
         logger.info(
-            "initializing embedder model=%s sample_rate=%s threshold=%.3f min_spk_seconds=%.2f",
+            (
+                "initializing embedder model=%s sample_rate=%s threshold=%.3f "
+                "min_spk_seconds=%.2f provider=%s threads=%s"
+            ),
             args.model_path,
             args.sample_rate,
             args.threshold,
             args.min_spk_seconds,
+            args.speaker_provider,
+            args.speaker_num_threads,
         )
         try:
             yield

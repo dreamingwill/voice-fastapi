@@ -16,13 +16,15 @@ class SpeakerEmbedder:
         model_path: str = "./models/3dspeaker_speech_eres2net_large_sv_zh-cn_3dspeaker_16k.onnx",
         sample_rate: int = 16000,
         threshold: float = 0.6,
+        provider: str = "cpu",
+        num_threads: int = 4,
     ):
         self.model_path = model_path
         self.sample_rate = sample_rate
         self.config = sherpa_onnx.SpeakerEmbeddingExtractorConfig(
             model=self.model_path,
-            num_threads=4,
-            provider="cpu",
+            num_threads=num_threads,
+            provider=provider,
         )
         self.extractor = sherpa_onnx.SpeakerEmbeddingExtractor(self.config)
         self.manager = sherpa_onnx.SpeakerEmbeddingManager(self.extractor.dim)

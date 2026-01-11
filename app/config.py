@@ -49,6 +49,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--sample_rate", type=int)
     parser.add_argument("--threshold", type=float, default=0.6)
+    parser.add_argument("--speaker_provider", type=str, default="cpu")
+    parser.add_argument("--speaker_num_threads", type=int, default=4)
     parser.add_argument("--tokens", type=str)
     parser.add_argument("--encoder", type=str)
     parser.add_argument("--decoder", type=str)
