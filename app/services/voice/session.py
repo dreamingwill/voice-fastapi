@@ -107,7 +107,11 @@ class AsrSession:
             return "unknown", 0.0, None, []
 
         eval_start = time.perf_counter()
-        emb = self.embedder.embed_from_waveform(buf, self.sample_rate_client, force=force)
+        try:
+            emb = self.embedder.embed_from_waveform(buf, self.sample_rate_client, force=force)
+        except Exception:
+            logger.exception("speaker embedding failed")
+            return "unknown", 0.0, None, []
         if emb is None or emb.size == 0:
             return "unknown", 0.0, None, []
 

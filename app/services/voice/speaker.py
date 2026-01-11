@@ -1,4 +1,5 @@
 import json
+import threading
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -83,6 +84,9 @@ class RknnSpeakerEmbedder:
         self.frame_shift_ms = frame_shift_ms
         self.core_mask = core_mask
         self.l2_normalize = l2_normalize
+        self._lock = threading.Lock()
+        self._rknn = None
+        self._runtime_ready = False
 
     def embed_from_waveform(self, samples: np.ndarray, sample_rate: int, force: bool = False) -> Optional[np.ndarray]:
         if samples.size == 0:
@@ -95,11 +99,27 @@ class RknnSpeakerEmbedder:
             frame_shift_ms=self.frame_shift_ms,
         )
         feats = _fix_num_frames(feats, self.num_frames)
-        emb = _rknn_embed(self.model_path, feats, self.core_mask)
+        emb = self._rknn_embed(feats)
         if self.l2_normalize:
             denom = np.linalg.norm(emb) + 1e-10
             emb = emb / denom
         return emb
+
+    def _ensure_runtime(self) -> None:
+        if self._runtime_ready:
+            return
+        self._rknn = _create_rknn_runtime(self.model_path, self.core_mask)
+        self._runtime_ready = True
+
+    def _rknn_embed(self, feats: np.ndarray) -> np.ndarray:
+        with self._lock:
+            if not self._runtime_ready:
+                self._ensure_runtime()
+            assert self._rknn is not None
+            x = feats[np.newaxis, :, :].astype(np.float32)
+            out = self._rknn.inference(inputs=[x])[0]
+            emb = np.squeeze(out)
+            return emb.astype(np.float32)
 
 
 def cosine_similarity(a, b):
@@ -266,7 +286,7 @@ def _resolve_core_mask(value: str) -> int:
     return chosen
 
 
-def _rknn_embed(model_path: str, feats: np.ndarray, core_mask: str) -> np.ndarray:
+def _create_rknn_runtime(model_path: str, core_mask: str):
     try:
         from rknnlite.api import RKNNLite
     except ImportError as exc:
@@ -279,10 +299,7 @@ def _rknn_embed(model_path: str, feats: np.ndarray, core_mask: str) -> np.ndarra
     ret = rknn.init_runtime(core_mask=_resolve_core_mask(core_mask))
     if ret != 0:
         raise RuntimeError(f"init_runtime failed: {ret}")
-    x = feats[np.newaxis, :, :].astype(np.float32)
-    out = rknn.inference(inputs=[x])[0]
-    emb = np.squeeze(out)
-    return emb.astype(np.float32)
+    return rknn
 
 
 __all__ = [

@@ -81,6 +81,7 @@ def create_app(args):
             args.rule2_min_trailing_silence,
             args.rule3_min_utterance_length,
         )
+        logger.info("database_url=%s", getattr(args, "database_url", None))
 
         app.state.asr_ready = True
         app.state.embedder = create_speaker_embedder(
