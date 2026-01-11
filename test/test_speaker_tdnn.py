@@ -31,10 +31,6 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.database import SessionLocal, init_db  # noqa: E402
-from app.models import User  # noqa: E402
-from app.services.voice.speaker import identify_user  # noqa: E402
-
 DEFAULT_CONFIG = Path("config/app_config_tdnn.json")
 
 
@@ -67,6 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--threshold", type=float, help="Similarity threshold for accepting a speaker")
     parser.add_argument("--speaker-provider", help="Provider label for speaker embedding model")
     parser.add_argument("--speaker-num-threads", type=int, help="Thread count for speaker embedding model")
+    parser.add_argument("--database-url", help="Override database URL for speaker embeddings")
     parser.add_argument("--feature-dim", type=int, default=80, help="Fbank feature dimension")
     parser.add_argument("--num-frames", type=int, default=300, help="Number of frames expected by the model")
     parser.add_argument("--frame-length-ms", type=float, default=25.0, help="Frame length in milliseconds")
@@ -227,6 +224,9 @@ def format_candidate(candidate: Dict[str, Any]) -> str:
 
 
 def enroll_embedding(user_id: int, embedding: np.ndarray) -> None:
+    from app.database import SessionLocal
+    from app.models import User
+
     payload = json.dumps(embedding.tolist())
     with SessionLocal() as db:
         user = db.query(User).filter(User.id == user_id).one_or_none()
@@ -248,6 +248,13 @@ def main():
     threshold = args.threshold if args.threshold is not None else cfg.get("threshold", 0.6)
     speaker_provider = args.speaker_provider or cfg.get("speaker_provider", "rknn")
     speaker_num_threads = args.speaker_num_threads or cfg.get("speaker_num_threads", 1)
+    database_url = args.database_url or cfg.get("database_url")
+    if database_url:
+        import os
+        from app import config as app_config
+
+        os.environ["DATABASE_URL"] = database_url
+        app_config.DATABASE_URL = database_url
 
     if args.record:
         audio_path = Path(args.audio or "tmp/tdnn_record.wav").expanduser()
@@ -284,12 +291,17 @@ def main():
         print("[speaker] embedding=", emb)
 
     if args.enroll_user_id is not None:
+        from app.database import init_db
+
         init_db()
         enroll_embedding(args.enroll_user_id, emb)
         print(f"[enroll] updated user_id={args.enroll_user_id}")
 
     if args.skip_identify:
         return
+
+    from app.database import init_db
+    from app.services.voice.speaker import identify_user
 
     init_db()
     matched, similarity, candidates = identify_user(emb, threshold=threshold)
