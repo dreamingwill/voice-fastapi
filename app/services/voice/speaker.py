@@ -4,6 +4,8 @@ import threading
 from contextlib import contextmanager
 from typing import Any, Dict, List, Optional, Tuple
 
+os.environ.setdefault("RKNN_LOG_LEVEL", "0")
+
 import numpy as np
 import sherpa_onnx
 
