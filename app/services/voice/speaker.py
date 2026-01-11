@@ -105,6 +105,12 @@ class RknnSpeakerEmbedder:
             emb = emb / denom
         return emb
 
+    def embed(self, samples: np.ndarray, sample_rate: int) -> np.ndarray:
+        emb = self.embed_from_waveform(samples, sample_rate, force=True)
+        if emb is None:
+            raise RuntimeError("Speaker embedding failed")
+        return emb
+
     def _ensure_runtime(self) -> None:
         if self._runtime_ready:
             return
