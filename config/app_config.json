@@ -1,7 +1,7 @@
 {
   "host": "0.0.0.0",
   "port": 8000,
-  "model_path": "./models/3dspeaker_speech_eres2net_large_sv_zh-cn_3dspeaker_16k.onnx",
+  "model_path": "./models/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx",
   "sample_rate": 16000,
   "threshold": 0.35,
   "provider": "rknn",
