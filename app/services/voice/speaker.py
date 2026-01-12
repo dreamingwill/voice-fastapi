@@ -1,4 +1,5 @@
 import json
+import logging
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -10,6 +11,7 @@ from ...database import SessionLocal
 from ...models import User
 
 SpeakerCandidate = Dict[str, Any]
+logger = logging.getLogger("speaker.cache")
 
 
 class _EmbeddingCache:
@@ -67,7 +69,10 @@ class _EmbeddingCache:
             now = time.time()
             if self._vectors is not None and (now - self._loaded_at) < self._ttl_s:
                 return self._vectors, self._candidates
-            self._load_from_db()
+            try:
+                self._load_from_db()
+            except Exception as exc:
+                logger.warning("speaker.cache.load failed error=%s", exc)
             return self._vectors, self._candidates
 
 

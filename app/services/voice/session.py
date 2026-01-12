@@ -102,6 +102,19 @@ class AsrSession:
             return np.zeros(0, dtype=np.float32)
         return np.concatenate(list(self.cur_utt_audio), axis=0)
 
+    def _resample_for_speaker(self, samples: np.ndarray) -> np.ndarray:
+        target_sr = getattr(self.embedder, "sample_rate", None) or self.sample_rate_client
+        src_sr = self.sample_rate_client
+        if samples.size == 0 or src_sr == target_sr:
+            return samples
+        new_len = int(round(samples.size * target_sr / src_sr))
+        if new_len <= 1:
+            return samples
+        x_old = np.arange(samples.size, dtype=np.float32)
+        x_new = np.linspace(0, samples.size - 1, new_len, dtype=np.float32)
+        resampled = np.interp(x_new, x_old, samples).astype(np.float32)
+        return np.ascontiguousarray(resampled, dtype=np.float32)
+
     def _try_speaker(
         self, force: bool = False
     ) -> Tuple[str, float, Optional[SpeakerCandidate], List[SpeakerCandidate]]:
@@ -122,18 +135,27 @@ class AsrSession:
                 return "unknown", 0.0, None, []
         self._last_speaker_eval_samples = buf.size
         self._last_speaker_eval_at = time.perf_counter()
+        buf = self._resample_for_speaker(buf)
 
         eval_start = time.perf_counter()
         st = self.embedder.create_stream()
-        st.accept_waveform(sample_rate=self.sample_rate_client, waveform=buf)
+        st.accept_waveform(sample_rate=self.embedder.sample_rate, waveform=buf)
         if force:
             st.input_finished()
-        if not self.embedder.is_ready(st):
+        try:
+            if not self.embedder.is_ready(st):
+                return "unknown", 0.0, None, []
+            emb = self.embedder.compute(st)
+            emb = np.asarray(emb, dtype=np.float32)
+        except Exception as exc:
+            logger.warning("speaker.embed failed error=%s", exc)
             return "unknown", 0.0, None, []
-        emb = self.embedder.compute(st)
-        emb = np.asarray(emb, dtype=np.float32)
 
-        matched, top_sim, topk = identify_user(emb, threshold=self.args.threshold)
+        try:
+            matched, top_sim, topk = identify_user(emb, threshold=self.args.threshold)
+        except Exception as exc:
+            logger.warning("speaker.identify failed error=%s", exc)
+            return "unknown", 0.0, None, []
         self._last_speaker_eval_latency_ms = int((time.perf_counter() - eval_start) * 1000)
 
         if force:
