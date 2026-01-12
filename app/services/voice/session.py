@@ -83,6 +83,10 @@ class AsrSession:
         self._last_partial_text_sent: Optional[str] = None
         self.session_id = websocket.scope.get("session_id")
         self._last_speaker_eval_latency_ms: Optional[int] = None
+        self._last_speaker_eval_samples = 0
+        self._last_speaker_eval_at = 0.0
+        self._speaker_eval_min_interval_s = 0.6
+        self._speaker_eval_min_delta_s = 1.2
         self.command_service = get_command_service()
         self.command_user_id: Optional[int] = None
         self.command_matching_enabled = False
@@ -101,10 +105,20 @@ class AsrSession:
         if not self.speaker_recognition_enabled or self.embedder is None:
             return "unknown", 0.0, None, []
         self._last_speaker_eval_latency_ms = None
+        if not force:
+            now = time.perf_counter()
+            if (now - self._last_speaker_eval_at) < self._speaker_eval_min_interval_s:
+                return "unknown", 0.0, None, []
         buf = self._concat_cur_utt_audio()
         need_len = int(self.args.min_spk_seconds * self.sample_rate_client)
         if (not force) and (buf.size < need_len):
             return "unknown", 0.0, None, []
+        if not force:
+            min_delta = int(self._speaker_eval_min_delta_s * self.sample_rate_client)
+            if (buf.size - self._last_speaker_eval_samples) < min_delta:
+                return "unknown", 0.0, None, []
+        self._last_speaker_eval_samples = buf.size
+        self._last_speaker_eval_at = time.perf_counter()
 
         eval_start = time.perf_counter()
         st = self.embedder.create_stream()

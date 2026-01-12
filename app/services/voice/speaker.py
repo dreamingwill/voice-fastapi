@@ -1,4 +1,6 @@
 import json
+import threading
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -8,6 +10,72 @@ from ...database import SessionLocal
 from ...models import User
 
 SpeakerCandidate = Dict[str, Any]
+
+
+class _EmbeddingCache:
+    def __init__(self, ttl_s: float = 30.0):
+        self._ttl_s = ttl_s
+        self._lock = threading.Lock()
+        self._loaded_at = 0.0
+        self._vectors: Optional[np.ndarray] = None
+        self._candidates: List[SpeakerCandidate] = []
+
+    def invalidate(self) -> None:
+        with self._lock:
+            self._loaded_at = 0.0
+            self._vectors = None
+            self._candidates = []
+
+    def _load_from_db(self) -> None:
+        vectors: List[np.ndarray] = []
+        candidates: List[SpeakerCandidate] = []
+        with SessionLocal() as db:
+            users = (
+                db.query(User)
+                .filter(User.embedding.isnot(None))
+                .filter(User.status != "disabled")
+                .all()
+            )
+        for user in users:
+            if not user.embedding:
+                continue
+            try:
+                vec = np.array(json.loads(user.embedding), dtype=np.float32)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue
+            if vec.size == 0:
+                continue
+            norm = float(np.linalg.norm(vec)) + 1e-10
+            vec = vec / norm
+            vectors.append(vec)
+            candidates.append(
+                {
+                    "id": user.id,
+                    "username": user.username,
+                    "identity": user.identity,
+                }
+            )
+        self._vectors = np.stack(vectors, axis=0) if vectors else None
+        self._candidates = candidates
+        self._loaded_at = time.time()
+
+    def get(self) -> Tuple[Optional[np.ndarray], List[SpeakerCandidate]]:
+        now = time.time()
+        if self._vectors is not None and (now - self._loaded_at) < self._ttl_s:
+            return self._vectors, self._candidates
+        with self._lock:
+            now = time.time()
+            if self._vectors is not None and (now - self._loaded_at) < self._ttl_s:
+                return self._vectors, self._candidates
+            self._load_from_db()
+            return self._vectors, self._candidates
+
+
+_EMBEDDING_CACHE = _EmbeddingCache()
+
+
+def invalidate_embedding_cache() -> None:
+    _EMBEDDING_CACHE.invalidate()
 
 
 class SpeakerEmbedder:
@@ -61,30 +129,21 @@ def identify_user(
     if query_embedding is None or query_embedding.size == 0:
         return None, 0.0, []
 
-    with SessionLocal() as db:
-        users = (
-            db.query(User)
-            .filter(User.embedding.isnot(None))
-            .filter(User.status != "disabled")
-            .all()
-        )
-
-        for user in users:
-            if not user.embedding:
-                continue
-            try:
-                stored_embedding = np.array(json.loads(user.embedding), dtype=np.float32)
-            except (json.JSONDecodeError, TypeError, ValueError):
-                continue
-            if stored_embedding.size == 0:
-                continue
-            sim = cosine_similarity(query_embedding, stored_embedding)
-            candidate: SpeakerCandidate = {
-                "id": user.id,
-                "username": user.username,
-                "identity": user.identity,
-            }
-            sims.append((candidate, sim))
+    vectors, candidates = _EMBEDDING_CACHE.get()
+    if vectors is None or not candidates:
+        return None, 0.0, []
+    query = np.asarray(query_embedding, dtype=np.float32)
+    query_norm = float(np.linalg.norm(query)) + 1e-10
+    query = query / query_norm
+    sims_array = vectors @ query
+    if sims_array.size == 0:
+        return None, 0.0, []
+    top_n = min(5, sims_array.size)
+    idx = np.argpartition(-sims_array, top_n - 1)[:top_n]
+    sorted_idx = idx[np.argsort(-sims_array[idx])]
+    for i in sorted_idx.tolist():
+        candidate = candidates[i]
+        sims.append((candidate, float(sims_array[i])))
 
     if not sims:
         return None, 0.0, []
@@ -103,4 +162,4 @@ def identify_user(
     return matched, float(top_sim), topk
 
 
-__all__ = ["SpeakerEmbedder", "identify_user", "SpeakerCandidate"]
+__all__ = ["SpeakerEmbedder", "identify_user", "SpeakerCandidate", "invalidate_embedding_cache"]

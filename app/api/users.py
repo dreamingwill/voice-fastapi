@@ -19,6 +19,7 @@ from ..schemas import (
     UsersListResponse,
 )
 from ..services.events import record_event_log
+from ..services.voice.speaker import invalidate_embedding_cache
 
 router = APIRouter(prefix="/api/users", tags=["users"])
 
@@ -151,6 +152,7 @@ async def create_user(
     db.add(user)
     db.commit()
     db.refresh(user)
+    invalidate_embedding_cache()
     record_event_log(
         session_id=None,
         user_id=user.id,
@@ -249,6 +251,7 @@ async def delete_user_by_id(
     }
     db.delete(user)
     db.commit()
+    invalidate_embedding_cache()
     record_event_log(
         session_id=None,
         user_id=user_id,
@@ -280,6 +283,7 @@ async def delete_user_by_username(
     }
     db.delete(user)
     db.commit()
+    invalidate_embedding_cache()
     record_event_log(
         session_id=None,
         user_id=user.id,
@@ -309,6 +313,7 @@ async def update_user_status(
         user.status = new_status
         db.commit()
         db.refresh(user)
+        invalidate_embedding_cache()
         record_event_log(
             session_id=None,
             user_id=user.id,
@@ -392,6 +397,7 @@ async def aggregate_voiceprint(
 
     db.commit()
     db.refresh(user)
+    invalidate_embedding_cache()
 
     record_event_log(
         session_id=None,
