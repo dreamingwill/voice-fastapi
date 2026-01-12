@@ -2,7 +2,8 @@ import asyncio
 import json
 import logging
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from collections import deque
+from typing import Any, Deque, Dict, List, Optional, Tuple
 
 import numpy as np
 from fastapi import FastAPI, HTTPException, WebSocket
@@ -68,7 +69,9 @@ class AsrSession:
         self.stream = self.recognizer.create_stream()
         self.total_samples_in = 0
         self.cur_utt_start_sample = 0
-        self.cur_utt_audio = []
+        self.cur_utt_audio: Deque[np.ndarray] = deque()
+        self.cur_utt_audio_samples = 0
+        self._speaker_buffer_max_s = 8.0
         self.cur_utt_speaker_guess_sent = False
         self.segment_id = 0
         self.session_started_at = time.perf_counter()
@@ -97,7 +100,7 @@ class AsrSession:
     def _concat_cur_utt_audio(self) -> np.ndarray:
         if not self.cur_utt_audio:
             return np.zeros(0, dtype=np.float32)
-        return np.concatenate(self.cur_utt_audio, axis=0)
+        return np.concatenate(list(self.cur_utt_audio), axis=0)
 
     def _try_speaker(
         self, force: bool = False
@@ -324,6 +327,7 @@ class AsrSession:
         self.segment_id += 1
         self.cur_utt_start_sample = self.total_samples_in
         self.cur_utt_audio.clear()
+        self.cur_utt_audio_samples = 0
         self.cur_utt_speaker_guess_sent = False
         self.cur_utt_started_at = time.perf_counter()
         self.latest_topk = []
@@ -365,6 +369,11 @@ class AsrSession:
             samples = self.enhancement_pipeline.process(samples, self.sample_rate_client, self.enhancement_config)
         self.total_samples_in += samples.size
         self.cur_utt_audio.append(samples)
+        self.cur_utt_audio_samples += samples.size
+        max_samples = int(self._speaker_buffer_max_s * self.sample_rate_client)
+        while self.cur_utt_audio_samples > max_samples and self.cur_utt_audio:
+            dropped = self.cur_utt_audio.popleft()
+            self.cur_utt_audio_samples -= dropped.size
         metrics = getattr(self.app.state, "session_metrics", None)
         if metrics is not None:
             metrics["audio_queue_depth"] = max(
@@ -419,6 +428,7 @@ class AsrSession:
             if not final_text:
                 self.recognizer.reset(self.stream)
                 self.cur_utt_audio.clear()
+                self.cur_utt_audio_samples = 0
                 self._last_partial_text_sent = None
                 self.cur_utt_started_at = time.perf_counter()
                 self.cur_utt_start_sample = self.total_samples_in
@@ -472,6 +482,8 @@ class AsrSession:
             self.recognizer.reset(self.stream)
         except Exception as exc:
             logger.warning("asr.stream.cleanup failed error=%s", exc)
+        self.cur_utt_audio.clear()
+        self.cur_utt_audio_samples = 0
 
     async def handle_text_message(self, raw: str) -> bool:
         text = raw.strip()
