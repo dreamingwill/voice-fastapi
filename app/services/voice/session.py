@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 import time
 from collections import deque
 from typing import Any, Deque, Dict, List, Optional, Tuple
@@ -84,6 +85,13 @@ class AsrSession:
         self._last_partial_logged_at = 0.0
         self._partial_log_interval = 0.5  # seconds
         self._last_partial_text_sent: Optional[str] = None
+        self._partial_candidate_text: Optional[str] = None
+        self._partial_candidate_score = 0.0
+        self._partial_candidate_streak = 0
+        self._partial_min_chars = max(1, int(os.getenv("COMMAND_PARTIAL_MIN_CHARS", "2")))
+        self._partial_suggest_threshold = float(os.getenv("COMMAND_PARTIAL_SUGGEST_THRESHOLD", "0.62"))
+        self._partial_strong_threshold = float(os.getenv("COMMAND_PARTIAL_STRONG_THRESHOLD", "0.78"))
+        self._partial_stability_frames = max(1, int(os.getenv("COMMAND_PARTIAL_STABILITY_FRAMES", "2")))
         self.session_id = websocket.scope.get("session_id")
         self._last_speaker_eval_latency_ms: Optional[int] = None
         self._last_speaker_eval_samples = 0
@@ -244,27 +252,81 @@ class AsrSession:
             return True
         return False
 
+    def _reset_partial_suggestion(self) -> None:
+        self._partial_candidate_text = None
+        self._partial_candidate_score = 0.0
+        self._partial_candidate_streak = 0
+
+    def _apply_partial_correction(self, text: str) -> Tuple[str, Optional[Dict[str, Any]]]:
+        raw_text = text or ""
+        cleaned = raw_text.strip()
+        if not cleaned or not self.command_matching_enabled:
+            self._reset_partial_suggestion()
+            return raw_text, None
+        if len(cleaned) < self._partial_min_chars:
+            return raw_text, None
+        suggestion = self.command_service.suggest_command(self.command_user_id or 0, cleaned)
+        if not suggestion.text:
+            self._reset_partial_suggestion()
+            return raw_text, None
+        if suggestion.text == self._partial_candidate_text:
+            if suggestion.score >= (self._partial_candidate_score - 0.01):
+                self._partial_candidate_streak += 1
+            else:
+                self._partial_candidate_streak = 1
+        else:
+            self._partial_candidate_text = suggestion.text
+            self._partial_candidate_streak = 1
+        self._partial_candidate_score = suggestion.score
+        is_stable = suggestion.score >= self._partial_strong_threshold or (
+            suggestion.score >= self._partial_suggest_threshold
+            and self._partial_candidate_streak >= self._partial_stability_frames
+        )
+        suggestion_payload = {
+            "text": suggestion.text,
+            "score": suggestion.score,
+            "method": suggestion.method,
+            "stable": bool(is_stable),
+        }
+        if is_stable:
+            return suggestion.text, suggestion_payload
+        return raw_text, suggestion_payload
+
     async def _send_partial(self, text: str, speaker: str):
-        if text == self._last_partial_text_sent:
+        display_text, suggestion = self._apply_partial_correction(text)
+        if display_text == self._last_partial_text_sent:
             return
-        self._last_partial_text_sent = text
-        if self._should_log_partial(text):
-            logger.info(
-                "asr.partial session=%s segment=%s speaker=%s start_ms=%s text=%s",
-                self.ws.scope.get("session_id"),
-                self.segment_id,
-                speaker,
-                _ms(self.cur_utt_start_sample, self.sample_rate_client),
-                text,
-            )
+        self._last_partial_text_sent = display_text
+        if self._should_log_partial(display_text):
+            if suggestion and display_text != text:
+                logger.info(
+                    "asr.partial session=%s segment=%s speaker=%s start_ms=%s text=%s raw=%s",
+                    self.ws.scope.get("session_id"),
+                    self.segment_id,
+                    speaker,
+                    _ms(self.cur_utt_start_sample, self.sample_rate_client),
+                    display_text,
+                    text,
+                )
+            else:
+                logger.info(
+                    "asr.partial session=%s segment=%s speaker=%s start_ms=%s text=%s",
+                    self.ws.scope.get("session_id"),
+                    self.segment_id,
+                    speaker,
+                    _ms(self.cur_utt_start_sample, self.sample_rate_client),
+                    display_text,
+                )
         await self.ws.send_json(
             {
                 "type": "partial",
                 "segment_id": self.segment_id,
                 "start_ms": _ms(self.cur_utt_start_sample, self.sample_rate_client),
                 "time_ms": _ms(self.total_samples_in, self.sample_rate_client),
-                "text": text,
+                "text": display_text,
+                "raw_text": text,
                 "speaker": speaker,
+                "command_suggestion": suggestion,
             }
         )
 
@@ -452,6 +514,7 @@ class AsrSession:
                 self.cur_utt_audio.clear()
                 self.cur_utt_audio_samples = 0
                 self._last_partial_text_sent = None
+                self._reset_partial_suggestion()
                 self.cur_utt_started_at = time.perf_counter()
                 self.cur_utt_start_sample = self.total_samples_in
             else:
@@ -472,6 +535,7 @@ class AsrSession:
                     cand or self.current_speaker_candidate,
                 )
                 self._last_partial_text_sent = None
+                self._reset_partial_suggestion()
                 self.recognizer.reset(self.stream)
 
     async def handle_done(self):

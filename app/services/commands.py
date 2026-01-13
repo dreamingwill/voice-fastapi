@@ -38,6 +38,10 @@ PHONETIC_THRESHOLD = float(os.getenv("COMMAND_PHONETIC_THRESHOLD", "0.68"))
 PHONETIC_TONE = os.getenv("COMMAND_PHONETIC_TONE", "false").strip().lower() in {"1", "true", "yes", "on"}
 NUMERIC_MISMATCH_PENALTY = float(os.getenv("COMMAND_NUMERIC_MISMATCH_PENALTY", "0.4"))
 NUMERIC_MISSING_PENALTY = float(os.getenv("COMMAND_NUMERIC_MISSING_PENALTY", "0.6"))
+PARTIAL_KEYWORDS_RAW = os.getenv("COMMAND_PARTIAL_KEYWORDS", "模飞,综合,起飞,检查,准备,停,点火,发射")
+PARTIAL_MAX_CANDIDATES = max(1, int(os.getenv("COMMAND_PARTIAL_MAX_CANDIDATES", "200")))
+PARTIAL_KEYWORD_BOOST = float(os.getenv("COMMAND_PARTIAL_KEYWORD_BOOST", "6.0"))
+PARTIAL_KEYWORD_PHONETIC_BOOST = float(os.getenv("COMMAND_PARTIAL_KEYWORD_PHONETIC_BOOST", "4.0"))
 
 
 COMMAND_STATUS_ENABLED = "enabled"
@@ -82,6 +86,16 @@ def _normalize_commands(commands: Sequence["CommandCreatePayload"]) -> List["Com
 def _normalize_for_matching(text: str) -> str:
     # casefold handles uppercase English without affecting Chinese characters
     return (text or "").strip().casefold()
+
+
+def _parse_keywords(value: str) -> Tuple[str, ...]:
+    if not value:
+        return ()
+    tokens = re.split(r"[,\s]+", value.strip())
+    return tuple(token for token in (item.strip() for item in tokens) if token)
+
+
+PARTIAL_KEYWORDS = _parse_keywords(PARTIAL_KEYWORDS_RAW)
 
 
 def _normalize_status(value: str) -> str:
@@ -129,6 +143,30 @@ def _pinyin_length_ratio(a: str, b: str) -> float:
     if not count_a or not count_b:
         return 0.0
     return min(count_a, count_b) / max(count_a, count_b)
+
+
+@lru_cache(maxsize=1)
+def _keyword_pinyin_map() -> Dict[str, str]:
+    if not PARTIAL_KEYWORDS:
+        return {}
+    return {keyword: _build_pinyin(keyword) for keyword in PARTIAL_KEYWORDS}
+
+
+def _keyword_boost(query: str, query_pinyin: str, candidate_text: str) -> float:
+    if not PARTIAL_KEYWORDS or not candidate_text:
+        return 0.0
+    boost = 0.0
+    pinyin_map = _keyword_pinyin_map()
+    for keyword in PARTIAL_KEYWORDS:
+        if keyword not in candidate_text:
+            continue
+        if keyword in query:
+            boost = max(boost, PARTIAL_KEYWORD_BOOST)
+            continue
+        keyword_pinyin = pinyin_map.get(keyword, "")
+        if keyword_pinyin and keyword_pinyin in query_pinyin:
+            boost = max(boost, PARTIAL_KEYWORD_PHONETIC_BOOST)
+    return boost
 
 
 _CHINESE_DIGITS = {
@@ -231,6 +269,13 @@ class CommandMatchResult:
     score: float
     command_id: Optional[int] = None
     command_code: Optional[str] = None
+
+
+@dataclass
+class CommandSuggestion:
+    text: Optional[str]
+    score: float
+    method: Optional[str] = None
 
 
 @dataclass
@@ -619,6 +664,15 @@ class CommandService:
             raise ValueError("Unexpected matcher state for BM25 backend")
         return self._match_with_bm25(content, state, threshold)
 
+    def suggest_command(self, user_id: int, text: str) -> CommandSuggestion:
+        content = (text or "").strip()
+        if not content:
+            return CommandSuggestion(None, 0.0, None)
+        state = self._matcher.get_state(GLOBAL_USER_ID)
+        if not isinstance(state, Bm25MatcherState):
+            return CommandSuggestion(None, 0.0, None)
+        return self._suggest_with_bm25(content, state)
+
     def _match_with_bm25(
         self,
         content: str,
@@ -797,6 +851,76 @@ class CommandService:
         )
         return CommandMatchResult(True, best_text, normalized, command_id=best_id, command_code=best_code)
 
+    def _suggest_with_bm25(
+        self,
+        content: str,
+        state: Bm25MatcherState,
+    ) -> CommandSuggestion:
+        if not state.texts:
+            return CommandSuggestion(None, 0.0, None)
+        normalized_query = _normalize_for_matching(content)
+        if not normalized_query:
+            return CommandSuggestion(None, 0.0, None)
+        query_pinyin = _build_pinyin(content) if PHONETIC_ENABLED else ""
+        query_tokens = _tokenize(content)
+        query_ordinals, query_numbers = _extract_numeric_tokens(content)
+        candidate_indices = set()
+        if state.bm25 is not None and query_tokens:
+            scores = np.asarray(state.bm25.get_scores(query_tokens), dtype=np.float32)
+            if scores.size:
+                top_k = min(BM25_TOP_K, scores.size)
+                bm25_indices = np.argsort(scores)[-top_k:][::-1]
+                candidate_indices.update(int(idx) for idx in bm25_indices)
+        if PHONETIC_ENABLED and query_pinyin and state.pinyin_texts:
+            pinyin_values = [
+                float(fuzz.partial_ratio(query_pinyin, candidate_pinyin)) * _pinyin_length_ratio(query_pinyin, candidate_pinyin)
+                if candidate_pinyin
+                else 0.0
+                for candidate_pinyin in state.pinyin_texts
+            ]
+            pinyin_scores = np.asarray(pinyin_values, dtype=np.float32)
+            if pinyin_scores.size:
+                top_k = min(BM25_TOP_K, pinyin_scores.size)
+                phonetic_indices = np.argsort(pinyin_scores)[-top_k:][::-1]
+                candidate_indices.update(int(idx) for idx in phonetic_indices)
+        if not candidate_indices:
+            limit = min(len(state.texts), PARTIAL_MAX_CANDIDATES)
+            candidate_indices.update(range(limit))
+        best_score = 0.0
+        best_text: Optional[str] = None
+        best_method: Optional[str] = None
+        for idx_int in candidate_indices:
+            candidate_text = state.texts[idx_int]
+            candidate_normalized = state.normalized_texts[idx_int]
+            candidate_pinyin = state.pinyin_texts[idx_int] if idx_int < len(state.pinyin_texts) else ""
+            text_score = float(fuzz.partial_ratio(normalized_query, candidate_normalized))
+            prefix_score = 0.0
+            if candidate_normalized.startswith(normalized_query):
+                prefix_score = 100.0 * (len(normalized_query) / max(len(candidate_normalized), 1))
+            pinyin_score = 0.0
+            if PHONETIC_ENABLED and query_pinyin and candidate_pinyin:
+                pinyin_score = float(fuzz.partial_ratio(query_pinyin, candidate_pinyin)) * _pinyin_length_ratio(
+                    query_pinyin, candidate_pinyin
+                )
+            base_score = max(text_score, prefix_score, pinyin_score)
+            if base_score <= 0.0:
+                continue
+            score = base_score + _keyword_boost(normalized_query, query_pinyin, candidate_text)
+            candidate_ordinals, candidate_numbers = _extract_numeric_tokens(candidate_text)
+            score *= _numeric_factor(query_ordinals, query_numbers, candidate_ordinals, candidate_numbers)
+            if score > best_score:
+                best_score = score
+                best_text = candidate_text
+                if base_score == pinyin_score:
+                    best_method = "phonetic"
+                elif base_score == prefix_score:
+                    best_method = "prefix"
+                else:
+                    best_method = "text"
+        if not best_text:
+            return CommandSuggestion(None, 0.0, None)
+        return CommandSuggestion(best_text, best_score / 100.0, best_method)
+
 
 @lru_cache(maxsize=1)
 def get_command_service() -> CommandService:
@@ -806,6 +930,7 @@ def get_command_service() -> CommandService:
 __all__ = [
     "CommandService",
     "CommandMatchResult",
+    "CommandSuggestion",
     "CommandCreatePayload",
     "get_command_service",
     "DEFAULT_MATCH_THRESHOLD",
