@@ -11,7 +11,7 @@
   "encoder": "./models/sherpa-onnx-rk3588-streaming-zipformer-small-bilingual-zh-en-2023-02-16/encoder.rknn",
   "decoder": "./models/sherpa-onnx-rk3588-streaming-zipformer-small-bilingual-zh-en-2023-02-16/decoder.rknn",
   "joiner": "./models/sherpa-onnx-rk3588-streaming-zipformer-small-bilingual-zh-en-2023-02-16/joiner.rknn",
-  "num_threads": 1,
+  "num_threads": -4,
   "rule1_min_trailing_silence": 2.0,
   "rule2_min_trailing_silence": 0.8,
   "rule3_min_utterance_length": 22
