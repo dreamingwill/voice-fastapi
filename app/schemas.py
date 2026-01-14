@@ -1,7 +1,7 @@
 from typing import Any, Dict, List, Optional
 from typing_extensions import Literal
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class UserCreateAndUpdate(BaseModel):
@@ -221,6 +221,21 @@ class CommandStatusUpdateRequest(BaseModel):
     status: str
 
 
+class CommandForwardRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    project_code: str = Field(..., alias="projectCode")
+    operator_account: str = Field(..., alias="operatorAccount")
+    operator_name: str = Field(..., alias="operatorName")
+    create_time: Optional[str] = Field(None, alias="createTime")
+
+
+class CommandForwardResponse(BaseModel):
+    sent: bool
+    project_code: str
+    speaker: str
+    forwarded_at: str
+
+
 class SystemSettingsResponse(BaseModel):
     enable_speaker_recognition: bool
 
@@ -256,6 +271,8 @@ __all__ = [
     "CommandSearchResponse",
     "CommandUpdateRequest",
     "CommandStatusUpdateRequest",
+    "CommandForwardRequest",
+    "CommandForwardResponse",
     "SystemSettingsResponse",
     "SystemSettingsUpdate",
 ]

@@ -1,7 +1,9 @@
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials
 
 from ..auth import TokenPayload, require_admin, security, validate_access_token
+from ..config import COMMAND_FORWARD_URL
 from ..schemas import (
     CommandListResponse,
     CommandSearchResponse,
@@ -10,7 +12,10 @@ from ..schemas import (
     CommandUpdateRequest,
     CommandItem,
     CommandStatusUpdateRequest,
+    CommandForwardRequest,
+    CommandForwardResponse,
 )
+from ..services.command_forwarder import forward_command_manual
 from ..services.commands import CommandCreatePayload, get_command_service
 
 router = APIRouter(prefix="/api/commands", tags=["commands"])
@@ -62,6 +67,46 @@ async def toggle_command_matching(
     )
     listing = service.list_commands(acting_user_id)
     return CommandListResponse(**listing)
+
+
+@router.post("/forward", response_model=CommandForwardResponse, status_code=status.HTTP_200_OK)
+async def forward_command(payload: CommandForwardRequest):
+    if not COMMAND_FORWARD_URL:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Command forward URL not configured",
+        )
+
+    code = payload.project_code.strip()
+    operator_name = payload.operator_name.strip()
+    operator_account = payload.operator_account.strip()
+    if not code or not operator_name or not operator_account:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="projectCode, operatorAccount, and operatorName are required",
+        )
+
+    speaker = operator_name
+    try:
+        forwarded_at = await forward_command_manual(
+            code=code,
+            speaker=speaker,
+            create_time=payload.create_time,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Command forward request failed",
+        ) from exc
+
+    return CommandForwardResponse(
+        sent=True,
+        project_code=code,
+        speaker=speaker,
+        forwarded_at=forwarded_at,
+    )
 
 
 def _get_builtin_admin_user_id() -> int:

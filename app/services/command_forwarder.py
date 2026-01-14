@@ -38,4 +38,37 @@ async def forward_command_match(
     logger.info("command.forward sent url=%s code=%s speaker=%s", COMMAND_FORWARD_URL, code, speaker or "")
 
 
-__all__ = ["forward_command_match"]
+def _resolve_timestamp(*, created_at: Optional[datetime] = None, create_time: Optional[str] = None) -> str:
+    if create_time:
+        return create_time
+    return (created_at or datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
+
+
+async def forward_command_manual(
+    code: str,
+    speaker: str,
+    *,
+    create_time: Optional[str] = None,
+    created_at: Optional[datetime] = None,
+) -> str:
+    """
+    Send a POST notification for manual command forwarding.
+    """
+    if not COMMAND_FORWARD_URL or not code:
+        raise ValueError("Command forward URL or code is missing")
+    timestamp = _resolve_timestamp(created_at=created_at, create_time=create_time)
+    payload = {
+        "createTime": timestamp,
+        "projectCode": code,
+        "speaker": speaker or "",
+    }
+
+    async with httpx.AsyncClient(timeout=COMMAND_FORWARD_TIMEOUT) as client:
+        response = await client.post(COMMAND_FORWARD_URL, json=payload)
+        response.raise_for_status()
+
+    logger.info("command.forward manual sent url=%s code=%s speaker=%s", COMMAND_FORWARD_URL, code, speaker or "")
+    return timestamp
+
+
+__all__ = ["forward_command_match", "forward_command_manual"]
