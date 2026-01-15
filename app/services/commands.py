@@ -428,29 +428,32 @@ class CommandService:
     def search_commands(
         self,
         user_id: int,
-        keyword: str,
+        keyword: Optional[str],
         *,
+        code: Optional[str] = None,
         page: int = 1,
         page_size: int = 20,
     ) -> Dict[str, object]:
         query = (keyword or "").strip()
-        if not query:
+        code_query = (code or "").strip()
+        if not query and not code_query:
             return {"items": [], "total": 0, "page": 1, "page_size": page_size}
         page = max(1, int(page))
         page_size = max(1, min(int(page_size), 200))
-        like_pattern = f"%{query}%"
         with self._get_session() as db:
-            base_query = (
-                db.query(Command)
-                .filter(Command.user_id == GLOBAL_USER_ID)
-                .filter(Command.text.like(like_pattern))
+            base_query = db.query(Command).filter(Command.user_id == GLOBAL_USER_ID)
+            if query:
+                like_pattern = f"%{query}%"
+                base_query = base_query.filter(Command.text.like(like_pattern))
+            if code_query:
+                code_pattern = f"%{code_query}%"
+                base_query = base_query.filter(Command.code.like(code_pattern))
+            base_query = base_query.order_by(
                 # Order by non-null code first, then code asc, then text, then id
-                .order_by(
-                    case((Command.code.is_(None), 1), else_=0).asc(),
-                    Command.code.asc(),
-                    Command.text.asc(),
-                    Command.id.asc(),
-                )
+                case((Command.code.is_(None), 1), else_=0).asc(),
+                Command.code.asc(),
+                Command.text.asc(),
+                Command.id.asc(),
             )
             total = base_query.count()
             rows: List[Command] = (

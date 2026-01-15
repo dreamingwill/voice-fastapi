@@ -134,13 +134,14 @@ def _get_builtin_admin_user_id() -> int:
 
 @router.get("/search", response_model=CommandSearchResponse, status_code=status.HTTP_200_OK)
 async def search_commands(
-    q: str = Query(..., min_length=1),
+    q: str | None = Query(None, min_length=1),
+    code: str | None = Query(None, min_length=1),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     user: TokenPayload = Depends(require_admin),
 ):
     service = get_command_service()
-    payload = service.search_commands(user.id, q, page=page, page_size=page_size)
+    payload = service.search_commands(user.id, q, code=code, page=page, page_size=page_size)
     return CommandSearchResponse(**payload)
 
 
