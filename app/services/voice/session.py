@@ -698,7 +698,19 @@ class AsrSession:
 
         async def _run():
             try:
-                await forward_command_match(code=code, speaker=speaker)
+                error = await forward_command_match(code=code, speaker=speaker)
+                if error:
+                    try:
+                        await self.ws.send_json(
+                            {
+                                "type": "command.forward.error",
+                                "code": code,
+                                "speaker": speaker,
+                                "error": error,
+                            }
+                        )
+                    except Exception:
+                        pass
             except Exception as exc:  # pragma: no cover - defensive logging
                 logger.warning("command.forward failed code=%s error=%s", code, exc)
 

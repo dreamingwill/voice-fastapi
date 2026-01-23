@@ -1,3 +1,4 @@
+import logging
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials
@@ -21,6 +22,7 @@ from ..services.command_forwarder import forward_command_manual
 from ..services.commands import CommandCreatePayload, get_command_service, GLOBAL_USER_ID
 
 router = APIRouter(prefix="/api/commands", tags=["commands"])
+logger = logging.getLogger("api.commands")
 
 
 @router.get("", response_model=CommandListResponse, status_code=status.HTTP_200_OK)
@@ -123,10 +125,33 @@ async def forward_command(payload: CommandForwardRequest):
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    except httpx.HTTPError as exc:
+    except httpx.HTTPStatusError as exc:
+        status_code = exc.response.status_code if exc.response else "unknown"
+        body_snippet = ""
+        if exc.response is not None:
+            try:
+                body_snippet = (exc.response.text or "")[:200]
+            except Exception:
+                body_snippet = ""
+        logger.warning(
+            "command.forward downstream status=%s url=%s body=%s",
+            status_code,
+            COMMAND_FORWARD_URL,
+            body_snippet,
+        )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Command forward request failed",
+            detail=f"Command forward request failed: downstream_status={status_code}",
+        ) from exc
+    except httpx.RequestError as exc:
+        logger.warning(
+            "command.forward network error=%s url=%s",
+            exc.__class__.__name__,
+            COMMAND_FORWARD_URL,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Command forward request failed: network_error={exc.__class__.__name__}",
         ) from exc
 
     return CommandForwardResponse(
