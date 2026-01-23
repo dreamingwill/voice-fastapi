@@ -4,6 +4,8 @@ from fastapi.security import HTTPAuthorizationCredentials
 
 from ..auth import TokenPayload, require_admin, security, validate_access_token
 from ..config import COMMAND_FORWARD_URL
+from ..database import SessionLocal
+from ..models import Command, User
 from ..schemas import (
     CommandListResponse,
     CommandSearchResponse,
@@ -16,7 +18,7 @@ from ..schemas import (
     CommandForwardResponse,
 )
 from ..services.command_forwarder import forward_command_manual
-from ..services.commands import CommandCreatePayload, get_command_service
+from ..services.commands import CommandCreatePayload, get_command_service, GLOBAL_USER_ID
 
 router = APIRouter(prefix="/api/commands", tags=["commands"])
 
@@ -85,6 +87,32 @@ async def forward_command(payload: CommandForwardRequest):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="projectCode, operatorAccount, and operatorName are required",
         )
+
+    with SessionLocal() as db:
+        command = (
+            db.query(Command)
+            .filter(Command.user_id == GLOBAL_USER_ID, Command.code == code)
+            .first()
+        )
+        if command is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="没有该指令",
+            )
+        operator = (
+            db.query(User)
+            .filter(
+                User.account == operator_account,
+                User.username == operator_name,
+                User.status != "disabled",
+            )
+            .first()
+        )
+        if operator is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="没有该操作员",
+            )
 
     speaker = operator_name
     try:
