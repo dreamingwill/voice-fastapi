@@ -67,6 +67,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rule1_min_trailing_silence", type=float, default=0.8)
     parser.add_argument("--rule2_min_trailing_silence", type=float, default=0.4)
     parser.add_argument("--rule3_min_utterance_length", type=int, default=15)
+    parser.add_argument("--vad_pre_roll_ms", type=int, default=int(os.getenv("PRE_ROLL_MS", "300")))
+    parser.add_argument("--vad_post_roll_ms", type=int, default=int(os.getenv("POST_ROLL_MS", "700")))
+    parser.add_argument("--vad_snr_open_db", type=float, default=float(os.getenv("SNR_OPEN_DB", "10")))
+    parser.add_argument("--vad_open_min_ms", type=int, default=int(os.getenv("OPEN_MIN_MS", "120")))
+    parser.add_argument("--vad_end_silence_ms", type=int, default=int(os.getenv("END_SILENCE_MS", "900")))
+    parser.add_argument("--vad_max_utterance_ms", type=int, default=int(os.getenv("MAX_UTTERANCE_MS", "0")))
     return parser
 
 

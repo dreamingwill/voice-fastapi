@@ -14,5 +14,11 @@
   "num_threads": 4,
   "rule1_min_trailing_silence": 2.0,
   "rule2_min_trailing_silence": 0.8,
-  "rule3_min_utterance_length": 22
+  "rule3_min_utterance_length": 22,
+  "vad_pre_roll_ms": 300,
+  "vad_post_roll_ms": 700,
+  "vad_snr_open_db": 10,
+  "vad_open_min_ms": 120,
+  "vad_end_silence_ms": 900,
+  "vad_max_utterance_ms": 0
 }

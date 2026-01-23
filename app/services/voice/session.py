@@ -16,6 +16,7 @@ from ...auth import validate_access_token
 from ..audio_enhancement import AudioEnhancementPipeline, EnhancementConfig
 from ..commands import get_command_service
 from .recognizer import create_recognizer, pcm_bytes_to_float32
+from .vad import EnergyVad, VadResult, VadTransition
 from .speaker import SpeakerCandidate, SpeakerEmbedder, identify_user
 
 logger = logging.getLogger("asr.session")
@@ -76,6 +77,7 @@ class AsrSession:
         self.segment_id = 0
         self.session_started_at = time.perf_counter()
         self.cur_utt_started_at = self.session_started_at
+        self.cur_utt_end_sample: Optional[int] = None
         self.handshake_received = False
         self.session_info: Dict[str, Any] = {}
         self.latest_topk: List[SpeakerCandidate] = []
@@ -96,6 +98,8 @@ class AsrSession:
         self.command_match_threshold: Optional[float] = None
         self.enhancement_pipeline: Optional[AudioEnhancementPipeline] = getattr(app.state, "enhancement_pipeline", None)
         self.enhancement_config = EnhancementConfig()
+        self.vad = self._create_vad()
+        self._last_vad_result: Optional[VadResult] = None
 
     def _concat_cur_utt_audio(self) -> np.ndarray:
         if not self.cur_utt_audio:
@@ -223,6 +227,24 @@ class AsrSession:
 
         self.enhancement_config = EnhancementConfig(**cfg_data)
 
+    def _create_vad(self) -> EnergyVad:
+        max_utt = getattr(self.args, "vad_max_utterance_ms", None)
+        if isinstance(max_utt, (int, float)) and max_utt <= 0:
+            max_utt = None
+        return EnergyVad(
+            sample_rate=self.sample_rate_client,
+            pre_roll_ms=getattr(self.args, "vad_pre_roll_ms", 300),
+            post_roll_ms=getattr(self.args, "vad_post_roll_ms", 700),
+            snr_open_db=getattr(self.args, "vad_snr_open_db", 10.0),
+            open_min_ms=getattr(self.args, "vad_open_min_ms", 120),
+            end_silence_ms=getattr(self.args, "vad_end_silence_ms", 900),
+            max_utterance_ms=max_utt,
+        )
+
+    def _rebuild_vad(self, sample_rate: int) -> None:
+        self._rebuild_vad(sample_rate)
+        self.vad = self._create_vad()
+
     def _get_operator_label(self) -> Optional[str]:
         operator = self.session_info.get("operator")
         if isinstance(operator, dict):
@@ -233,6 +255,49 @@ class AsrSession:
             cleaned = operator.strip()
             return cleaned or None
         return None
+
+    def _append_cur_utt_audio(self, samples: np.ndarray) -> None:
+        if samples.size == 0:
+            return
+        self.cur_utt_audio.append(samples)
+        self.cur_utt_audio_samples += samples.size
+        max_samples = int(self._speaker_buffer_max_s * self.sample_rate_client)
+        while self.cur_utt_audio_samples > max_samples and self.cur_utt_audio:
+            dropped = self.cur_utt_audio.popleft()
+            self.cur_utt_audio_samples -= dropped.size
+
+    def _reset_utterance_state(self, start_sample: Optional[int] = None) -> None:
+        self.cur_utt_audio.clear()
+        self.cur_utt_audio_samples = 0
+        self.cur_utt_speaker_guess_sent = False
+        self.latest_topk = []
+        self.current_speaker_candidate = None
+        self._last_partial_text_sent = None
+        self.cur_utt_started_at = time.perf_counter()
+        if start_sample is not None:
+            self.cur_utt_start_sample = start_sample
+        else:
+            self.cur_utt_start_sample = self.total_samples_in
+        self.cur_utt_end_sample = None
+
+    def _log_vad_transitions(self, transitions: List[VadTransition]) -> None:
+        if not transitions:
+            return
+        for transition in transitions:
+            logger.info(
+                (
+                    "vad.transition session=%s from=%s to=%s reason=%s snr_db=%.2f "
+                    "total_ms=%s utt_ms=%s dropped_ms=%s"
+                ),
+                self.ws.scope.get("session_id"),
+                transition.prev_state,
+                transition.new_state,
+                transition.reason,
+                transition.snr_db,
+                transition.total_ms,
+                transition.utt_ms,
+                transition.dropped_ms,
+            )
 
     def _should_log_partial(self, text: str) -> bool:
         if text == self._last_partial_text_sent:
@@ -276,6 +341,7 @@ class AsrSession:
         topk: List[SpeakerCandidate],
         candidate: Optional[SpeakerCandidate],
     ):
+        end_sample = self.cur_utt_end_sample or self.total_samples_in
         meta_topk = [
             {"username": item.get("username"), "similarity": item.get("similarity", 0.0)}
             for item in topk
@@ -289,7 +355,7 @@ class AsrSession:
                 "type": "final",
                 "segment_id": self.segment_id,
                 "start_ms": _ms(self.cur_utt_start_sample, self.sample_rate_client),
-                "end_ms": _ms(self.total_samples_in, self.sample_rate_client),
+                "end_ms": _ms(end_sample, self.sample_rate_client),
                 "text": text,
                 "speaker": speaker,
                 "similarity": similarity,
@@ -323,7 +389,7 @@ class AsrSession:
                 "segment_id": self.segment_id,
                 "similarity": similarity,
                 "start_ms": _ms(self.cur_utt_start_sample, self.sample_rate_client),
-                "end_ms": _ms(self.total_samples_in, self.sample_rate_client),
+                "end_ms": _ms(end_sample, self.sample_rate_client),
                 "topk": meta_topk,
                 "command_match": command_match,
             },
@@ -334,7 +400,7 @@ class AsrSession:
             speaker=speaker,
             similarity=similarity,
             start_ms=_ms(self.cur_utt_start_sample, self.sample_rate_client),
-            end_ms=_ms(self.total_samples_in, self.sample_rate_client),
+            end_ms=_ms(end_sample, self.sample_rate_client),
             topk=topk,
             candidate=candidate,
         )
@@ -354,6 +420,7 @@ class AsrSession:
         self.cur_utt_started_at = time.perf_counter()
         self.latest_topk = []
         self.current_speaker_candidate = None
+        self.cur_utt_end_sample = None
 
     def _persist_transcript_segment(
         self,
@@ -390,12 +457,30 @@ class AsrSession:
         if self.enhancement_pipeline is not None and not self.enhancement_config.is_passthrough:
             samples = self.enhancement_pipeline.process(samples, self.sample_rate_client, self.enhancement_config)
         self.total_samples_in += samples.size
-        self.cur_utt_audio.append(samples)
-        self.cur_utt_audio_samples += samples.size
-        max_samples = int(self._speaker_buffer_max_s * self.sample_rate_client)
-        while self.cur_utt_audio_samples > max_samples and self.cur_utt_audio:
-            dropped = self.cur_utt_audio.popleft()
-            self.cur_utt_audio_samples -= dropped.size
+
+        vad_result = self.vad.process(samples)
+        self._last_vad_result = vad_result
+        self._log_vad_transitions(vad_result.transitions)
+
+        if vad_result.started:
+            try:
+                self.recognizer.reset(self.stream)
+            except Exception:
+                pass
+            self._reset_utterance_state(start_sample=vad_result.start_sample)
+
+        if not vad_result.feed_samples:
+            return
+
+        feed = (
+            np.concatenate(vad_result.feed_samples, axis=0)
+            if len(vad_result.feed_samples) > 1
+            else vad_result.feed_samples[0]
+        )
+        if feed.size == 0:
+            return
+
+        self._append_cur_utt_audio(feed)
         metrics = getattr(self.app.state, "session_metrics", None)
         if metrics is not None:
             metrics["audio_queue_depth"] = max(
@@ -403,8 +488,8 @@ class AsrSession:
                 len(self.cur_utt_audio),
             )
 
-        chunk_ms = _ms(samples.size, self.sample_rate_client)
-        self.stream.accept_waveform(self.sample_rate_client, samples)
+        chunk_ms = _ms(feed.size, self.sample_rate_client)
+        self.stream.accept_waveform(self.sample_rate_client, feed)
         decode_iters = 0
         while self.recognizer.is_ready(self.stream):
             self.recognizer.decode_stream(self.stream)
@@ -417,8 +502,6 @@ class AsrSession:
             if self.cur_utt_speaker_guess_sent
             else "unknown"
         )
-        endpoint_detected = self.recognizer.is_endpoint(self.stream)
-
         # logger.info(
         #     (
         #         "asr.decode session=%s chunk_ms=%s decode_ms=%s decodes=%s "
@@ -445,38 +528,39 @@ class AsrSession:
             self.latest_topk = []
         await self._send_partial(text, speaker)
 
-        if endpoint_detected:
-            final_text = text.strip()
-            if not final_text:
-                self.recognizer.reset(self.stream)
-                self.cur_utt_audio.clear()
-                self.cur_utt_audio_samples = 0
-                self._last_partial_text_sent = None
-                self.cur_utt_started_at = time.perf_counter()
-                self.cur_utt_start_sample = self.total_samples_in
-            else:
-                if self.speaker_recognition_enabled:
-                    final_spk, final_sim, cand, topk = self._try_speaker(force=True)
-                    self.latest_topk = topk
-                    if cand is not None:
-                        self.current_speaker_candidate = cand
-                        await self._send_speaker_state(cand, final_sim)
-                else:
-                    final_spk, final_sim, cand, topk = "unknown", 0.0, None, []
-                    self.latest_topk = []
-                await self._send_final(
-                    final_text,
-                    final_spk,
-                    final_sim,
-                    topk or self.latest_topk,
-                    cand or self.current_speaker_candidate,
-                )
-                self._last_partial_text_sent = None
-                self.recognizer.reset(self.stream)
+        if vad_result.ended:
+            await self._finalize_vad_utterance(
+                end_reason=vad_result.end_reason or "end_silence",
+                end_sample=vad_result.end_sample,
+                snr_db=vad_result.snr_db,
+                dropped_samples=vad_result.dropped_samples,
+            )
 
-    async def handle_done(self):
-        text = self.recognizer.get_result(self.stream).strip()
-        if text:
+    async def _finalize_vad_utterance(
+        self,
+        *,
+        end_reason: str,
+        end_sample: Optional[int],
+        snr_db: float,
+        dropped_samples: int,
+    ) -> None:
+        try:
+            self.stream.input_finished()
+            while self.recognizer.is_ready(self.stream):
+                self.recognizer.decode_stream(self.stream)
+        except Exception as exc:
+            logger.warning("vad.flush failed error=%s", exc)
+
+        self.cur_utt_end_sample = end_sample
+        final_text = self.recognizer.get_result(self.stream).strip()
+        final_triggered = bool(final_text)
+
+        utt_ms = _ms(
+            (end_sample or self.total_samples_in) - self.cur_utt_start_sample,
+            self.sample_rate_client,
+        )
+
+        if final_triggered:
             if self.speaker_recognition_enabled:
                 final_spk, final_sim, cand, topk = self._try_speaker(force=True)
                 self.latest_topk = topk
@@ -487,12 +571,63 @@ class AsrSession:
                 final_spk, final_sim, cand, topk = "unknown", 0.0, None, []
                 self.latest_topk = []
             await self._send_final(
-                text,
+                final_text,
                 final_spk,
                 final_sim,
                 topk or self.latest_topk,
                 cand or self.current_speaker_candidate,
             )
+        else:
+            self._reset_utterance_state()
+
+        logger.info(
+            (
+                "vad.final session=%s reason=%s triggered=%s utt_ms=%s snr_db=%.2f "
+                "dropped_ms=%s text_len=%s"
+            ),
+            self.ws.scope.get("session_id"),
+            end_reason,
+            final_triggered,
+            utt_ms,
+            snr_db,
+            _ms(dropped_samples, self.sample_rate_client),
+            len(final_text),
+        )
+
+        self._last_partial_text_sent = None
+        try:
+            self.recognizer.reset(self.stream)
+        except Exception as exc:
+            logger.warning("vad.stream.reset failed error=%s", exc)
+
+    async def handle_done(self):
+        if self.vad.state in {"SPEECH", "TAIL"}:
+            last = self._last_vad_result
+            await self._finalize_vad_utterance(
+                end_reason="client_done",
+                end_sample=self.total_samples_in,
+                snr_db=(last.snr_db if last else 0.0),
+                dropped_samples=(last.dropped_samples if last else 0),
+            )
+        else:
+            text = self.recognizer.get_result(self.stream).strip()
+            if text:
+                if self.speaker_recognition_enabled:
+                    final_spk, final_sim, cand, topk = self._try_speaker(force=True)
+                    self.latest_topk = topk
+                    if cand is not None:
+                        self.current_speaker_candidate = cand
+                        await self._send_speaker_state(cand, final_sim)
+                else:
+                    final_spk, final_sim, cand, topk = "unknown", 0.0, None, []
+                    self.latest_topk = []
+                await self._send_final(
+                    text,
+                    final_spk,
+                    final_sim,
+                    topk or self.latest_topk,
+                    cand or self.current_speaker_candidate,
+                )
         finalize_transcript(session_id=self.session_id, status="completed")
         self._flush_and_reset_stream()
 
@@ -506,6 +641,7 @@ class AsrSession:
             logger.warning("asr.stream.cleanup failed error=%s", exc)
         self.cur_utt_audio.clear()
         self.cur_utt_audio_samples = 0
+        self.cur_utt_end_sample = None
 
     async def handle_text_message(self, raw: str) -> bool:
         text = raw.strip()

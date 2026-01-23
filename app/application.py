@@ -58,7 +58,8 @@ def create_app(args):
                 "decoder=%s joiner=%s provider=%s sample_rate=%s feature_dim=%s "
                 "decoding=%s max_paths=%s threads=%s hotwords_file=%s "
                 "hotwords_score=%.2f blank_penalty=%.2f hr_rule_fsts=%s hr_lexicon=%s "
-                "rule1=%.3f rule2=%.3f rule3=%s"
+                "rule1=%.3f rule2=%.3f rule3=%s "
+                "vad_pre=%s vad_post=%s vad_snr=%.1f vad_open=%s vad_end=%s vad_max=%s"
             ),
             args.host,
             args.port,
@@ -80,6 +81,12 @@ def create_app(args):
             args.rule1_min_trailing_silence,
             args.rule2_min_trailing_silence,
             args.rule3_min_utterance_length,
+            args.vad_pre_roll_ms,
+            args.vad_post_roll_ms,
+            args.vad_snr_open_db,
+            args.vad_open_min_ms,
+            args.vad_end_silence_ms,
+            args.vad_max_utterance_ms,
         )
 
         app.state.asr_ready = True
