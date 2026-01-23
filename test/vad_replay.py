@@ -55,6 +55,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--vad-open-min-ms", type=int, default=None)
     parser.add_argument("--vad-end-silence-ms", type=int, default=None)
     parser.add_argument("--vad-max-utterance-ms", type=int, default=None)
+    parser.add_argument("--vad-reopen-min-ms", type=int, default=None)
+    parser.add_argument("--vad-noise-margin-db", type=float, default=None)
+    parser.add_argument("--vad-noise-bootstrap-ms", type=int, default=None)
     return parser
 
 
@@ -102,6 +105,9 @@ def main():
         open_min_ms=int(args.vad_open_min_ms or cfg.get("vad_open_min_ms", 120)),
         end_silence_ms=int(args.vad_end_silence_ms or cfg.get("vad_end_silence_ms", 900)),
         max_utterance_ms=int(args.vad_max_utterance_ms or cfg.get("vad_max_utterance_ms", 0)) or None,
+        reopen_min_ms=int(args.vad_reopen_min_ms or cfg.get("vad_reopen_min_ms", 120)),
+        noise_update_margin_db=float(args.vad_noise_margin_db or cfg.get("vad_noise_margin_db", 3.0)),
+        noise_bootstrap_ms=int(args.vad_noise_bootstrap_ms or cfg.get("vad_noise_bootstrap_ms", 1000)),
     )
 
     chunk_samples = max(1, int(sr * args.chunk_ms / 1000))

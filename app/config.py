@@ -73,6 +73,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--vad_open_min_ms", type=int, default=int(os.getenv("OPEN_MIN_MS", "120")))
     parser.add_argument("--vad_end_silence_ms", type=int, default=int(os.getenv("END_SILENCE_MS", "900")))
     parser.add_argument("--vad_max_utterance_ms", type=int, default=int(os.getenv("MAX_UTTERANCE_MS", "0")))
+    parser.add_argument("--vad_reopen_min_ms", type=int, default=int(os.getenv("VAD_REOPEN_MIN_MS", "120")))
+    parser.add_argument("--vad_noise_margin_db", type=float, default=float(os.getenv("VAD_NOISE_MARGIN_DB", "3")))
+    parser.add_argument(
+        "--vad_noise_bootstrap_ms",
+        type=int,
+        default=int(os.getenv("VAD_NOISE_BOOTSTRAP_MS", "1000")),
+    )
     return parser
 
 

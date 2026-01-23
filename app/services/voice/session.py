@@ -239,6 +239,9 @@ class AsrSession:
             open_min_ms=getattr(self.args, "vad_open_min_ms", 120),
             end_silence_ms=getattr(self.args, "vad_end_silence_ms", 900),
             max_utterance_ms=max_utt,
+            reopen_min_ms=getattr(self.args, "vad_reopen_min_ms", 120),
+            noise_update_margin_db=getattr(self.args, "vad_noise_margin_db", 3.0),
+            noise_bootstrap_ms=getattr(self.args, "vad_noise_bootstrap_ms", 1000),
         )
 
     def _rebuild_vad(self, sample_rate: int) -> None:

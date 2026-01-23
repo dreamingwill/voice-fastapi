@@ -44,9 +44,12 @@ class EnergyVad:
         open_min_ms: int = 120,
         end_silence_ms: int = 900,
         max_utterance_ms: Optional[int] = None,
+        reopen_min_ms: int = 120,
+        noise_bootstrap_ms: int = 1000,
         frame_ms: int = 20,
         noise_ema_alpha: float = 0.95,
         min_noise_floor: float = 1e-4,
+        noise_update_margin_db: float = 3.0,
     ):
         self.sample_rate = int(sample_rate)
         self.pre_roll_ms = int(pre_roll_ms)
@@ -55,15 +58,20 @@ class EnergyVad:
         self.open_min_ms = int(open_min_ms)
         self.end_silence_ms = int(end_silence_ms)
         self.max_utterance_ms = int(max_utterance_ms) if max_utterance_ms else None
+        self.reopen_min_ms = int(reopen_min_ms)
+        self.noise_bootstrap_ms = int(noise_bootstrap_ms)
         self.frame_ms = int(frame_ms)
         self.noise_ema_alpha = float(noise_ema_alpha)
         self.min_noise_floor = float(min_noise_floor)
+        self.noise_update_margin_db = float(noise_update_margin_db)
 
         self.frame_samples = max(1, int(self.sample_rate * self.frame_ms / 1000))
         self._pre_roll_max_samples = max(1, int(self.sample_rate * self.pre_roll_ms / 1000))
         self._post_roll_samples = max(1, int(self.sample_rate * self.post_roll_ms / 1000))
         self._open_min_samples = max(1, int(self.sample_rate * self.open_min_ms / 1000))
         self._end_silence_samples = max(1, int(self.sample_rate * self.end_silence_ms / 1000))
+        self._reopen_min_samples = max(1, int(self.sample_rate * self.reopen_min_ms / 1000))
+        self._noise_bootstrap_samples = max(1, int(self.sample_rate * self.noise_bootstrap_ms / 1000))
         self._max_utt_samples = (
             max(1, int(self.sample_rate * self.max_utterance_ms / 1000))
             if self.max_utterance_ms
@@ -75,8 +83,10 @@ class EnergyVad:
         self._open_samples = 0
         self._silence_samples = 0
         self._tail_samples = 0
+        self._reopen_samples = 0
         self._utt_samples = 0
         self._total_samples = 0
+        self._idle_samples = 0
         self._fed_samples_total = 0
         self._frame_buffer = np.zeros(0, dtype=np.float32)
         self._pre_roll: Deque[np.ndarray] = deque()
@@ -159,7 +169,11 @@ class EnergyVad:
             self._last_snr_db = snr_db
 
             if self._state == "IDLE":
-                self._update_noise_floor(rms)
+                self._idle_samples += frame.size
+                if self._idle_samples <= self._noise_bootstrap_samples or snr_db < (
+                    self.snr_open_db - self.noise_update_margin_db
+                ):
+                    self._update_noise_floor(rms)
                 self._push_pre_roll(frame)
                 if snr_db >= self.snr_open_db:
                     self._open_samples += frame.size
@@ -193,6 +207,8 @@ class EnergyVad:
                     self._open_samples = 0
                     self._silence_samples = 0
                     self._tail_samples = 0
+                    self._reopen_samples = 0
+                    self._idle_samples = 0
                 continue
 
             if self._state in {"SPEECH", "TAIL"}:
@@ -201,9 +217,10 @@ class EnergyVad:
                 self._utt_samples += frame.size
 
                 if self._state == "SPEECH":
-                    if snr_db < self.snr_open_db:
+                    close_db = max(0.0, self.snr_open_db - self.noise_update_margin_db)
+                    if snr_db < close_db:
                         self._silence_samples += frame.size
-                    else:
+                    elif snr_db >= self.snr_open_db:
                         self._silence_samples = 0
                     if self._silence_samples >= self._end_silence_samples:
                         prev_state = self._state
@@ -226,6 +243,32 @@ class EnergyVad:
                         )
 
                 if self._state == "TAIL":
+                    if snr_db >= self.snr_open_db:
+                        self._reopen_samples += frame.size
+                    else:
+                        self._reopen_samples = 0
+                    if self._reopen_samples >= self._reopen_min_samples:
+                        prev_state = self._state
+                        self._state = "SPEECH"
+                        self._silence_samples = 0
+                        self._tail_samples = 0
+                        self._reopen_samples = 0
+                        transitions.append(
+                            VadTransition(
+                                prev_state=prev_state,
+                                new_state="SPEECH",
+                                reason="reopen",
+                                snr_db=snr_db,
+                                total_ms=int(self._total_samples * 1000 / self.sample_rate),
+                                utt_ms=int(self._utt_samples * 1000 / self.sample_rate),
+                                dropped_ms=int(
+                                    max(0, self._total_samples - self._fed_samples_total - fed_samples)
+                                    * 1000
+                                    / self.sample_rate
+                                ),
+                            )
+                        )
+                        continue
                     self._tail_samples += frame.size
                     if self._tail_samples >= self._post_roll_samples:
                         prev_state = self._state
@@ -251,7 +294,9 @@ class EnergyVad:
                         self._open_samples = 0
                         self._silence_samples = 0
                         self._tail_samples = 0
+                        self._reopen_samples = 0
                         self._utt_samples = 0
+                        self._idle_samples = 0
 
                 if self._max_utt_samples and self._utt_samples >= self._max_utt_samples:
                     prev_state = self._state
@@ -277,7 +322,9 @@ class EnergyVad:
                     self._open_samples = 0
                     self._silence_samples = 0
                     self._tail_samples = 0
+                    self._reopen_samples = 0
                     self._utt_samples = 0
+                    self._idle_samples = 0
                 continue
 
         if idx < total_in:

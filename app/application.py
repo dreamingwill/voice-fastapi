@@ -59,7 +59,8 @@ def create_app(args):
                 "decoding=%s max_paths=%s threads=%s hotwords_file=%s "
                 "hotwords_score=%.2f blank_penalty=%.2f hr_rule_fsts=%s hr_lexicon=%s "
                 "rule1=%.3f rule2=%.3f rule3=%s "
-                "vad_pre=%s vad_post=%s vad_snr=%.1f vad_open=%s vad_end=%s vad_max=%s"
+                "vad_pre=%s vad_post=%s vad_snr=%.1f vad_open=%s vad_end=%s vad_max=%s "
+                "vad_reopen=%s vad_noise_margin=%.1f vad_noise_bootstrap=%s"
             ),
             args.host,
             args.port,
@@ -87,6 +88,9 @@ def create_app(args):
             args.vad_open_min_ms,
             args.vad_end_silence_ms,
             args.vad_max_utterance_ms,
+            args.vad_reopen_min_ms,
+            args.vad_noise_margin_db,
+            args.vad_noise_bootstrap_ms,
         )
 
         app.state.asr_ready = True
