@@ -44,6 +44,12 @@ async def health(request: Request):
     )
 
 
+@router.get("/forward-target")
+async def forward_target_status():
+    from ..services.command_forwarder import check_forward_target
+    return await check_forward_target()
+
+
 @router.get("/metrics", response_model=MetricsResponse)
 async def metrics(
     request: Request,

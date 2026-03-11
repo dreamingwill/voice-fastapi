@@ -96,4 +96,16 @@ async def forward_command_manual(
     return timestamp
 
 
-__all__ = ["forward_command_match", "forward_command_manual"]
+async def check_forward_target() -> dict:
+    """Check if the command forward target is reachable."""
+    if not COMMAND_FORWARD_URL:
+        return {"configured": False, "reachable": False}
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            response = await client.head(COMMAND_FORWARD_URL)
+            return {"configured": True, "reachable": True, "status_code": response.status_code}
+    except Exception:
+        return {"configured": True, "reachable": False}
+
+
+__all__ = ["forward_command_match", "forward_command_manual", "check_forward_target"]
