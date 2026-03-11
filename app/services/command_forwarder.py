@@ -103,7 +103,9 @@ async def check_forward_target() -> dict:
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
             response = await client.head(COMMAND_FORWARD_URL)
-            return {"configured": True, "reachable": True, "status_code": response.status_code}
+            # 501 = HEAD not implemented, server is up; treat as reachable
+            reachable = response.status_code < 500 or response.status_code == 501
+            return {"configured": True, "reachable": reachable, "status_code": response.status_code}
     except Exception:
         return {"configured": True, "reachable": False}
 
