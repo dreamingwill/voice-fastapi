@@ -18,7 +18,7 @@ async def list_enhancement_options():
             "description": "可选增强强度，1 为默认，数值越大抑制越强。",
         },
         "dereverb": {
-            "label": "启用 Dereverb（WPE）",
+            "label": "混响消除",
             "description": "基于 WPE 的混响消除，可选。",
             "defaultEnabled": False,
             "parameters": {"delay": 3, "taps": 10, "iterations": 3},
