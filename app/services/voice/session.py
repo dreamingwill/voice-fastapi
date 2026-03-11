@@ -10,6 +10,7 @@ from fastapi import FastAPI, HTTPException, WebSocket
 from pydantic import ValidationError
 
 from ..command_forwarder import forward_command_match
+from ..recordings import cleanup_old_recordings, close_recording, open_recording
 from ..events import record_event_log
 from ..transcripts import append_transcript_segment, finalize_transcript
 from ...auth import validate_access_token
@@ -100,6 +101,8 @@ class AsrSession:
         self.enhancement_config = EnhancementConfig()
         self.vad = self._create_vad()
         self._last_vad_result: Optional[VadResult] = None
+        self.save_audio = False
+        self._wav_writer = None
 
     def _concat_cur_utt_audio(self) -> np.ndarray:
         if not self.cur_utt_audio:
@@ -456,6 +459,11 @@ class AsrSession:
 
     async def handle_binary_audio(self, data: bytes):
         chunk_start = time.perf_counter()
+        if self._wav_writer is not None:
+            try:
+                self._wav_writer.writeframes(data)
+            except Exception as exc:
+                logger.warning("recording.write failed error=%s", exc)
         samples = pcm_bytes_to_float32(data, self.dtype_hint)
         if self.enhancement_pipeline is not None and not self.enhancement_config.is_passthrough:
             samples = self.enhancement_pipeline.process(samples, self.sample_rate_client, self.enhancement_config)
@@ -632,6 +640,10 @@ class AsrSession:
                     cand or self.current_speaker_candidate,
                 )
         finalize_transcript(session_id=self.session_id, status="completed")
+        close_recording(self._wav_writer)
+        self._wav_writer = None
+        if self.save_audio:
+            cleanup_old_recordings()
         self._flush_and_reset_stream()
 
     def _flush_and_reset_stream(self) -> None:
@@ -748,6 +760,10 @@ class AsrSession:
             channels,
             data.get("operator"),
         )
+
+        self.save_audio = bool(data.get("saveAudio", False))
+        if self.save_audio:
+            self._wav_writer = open_recording(session_id or "unknown", self.sample_rate_client)
 
         await self._send_meta(
             {

@@ -6,6 +6,8 @@ from typing import Any, Dict, Optional
 
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./database/voiceprints.db")
+RECORDINGS_DIR = os.getenv("RECORDINGS_DIR", "./recordings/")
+RECORDINGS_MAX_COUNT = int(os.getenv("RECORDINGS_MAX_COUNT", "10"))
 
 ACCESS_TOKEN_TTL = int(os.getenv("ACCESS_TOKEN_TTL", "3600"))
 REFRESH_TOKEN_TTL = int(os.getenv("REFRESH_TOKEN_TTL", str(7 * 24 * 3600)))
