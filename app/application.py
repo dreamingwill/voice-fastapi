@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .api import auth as auth_routes
 from .api import enhancement as enhancement_routes
+from .api import job_positions as job_positions_routes
 from .api import logs as logs_routes
 from .api import settings as settings_routes
 from .api import status as status_routes
@@ -130,6 +131,7 @@ def create_app(args):
     app.include_router(transcripts_routes.router)
     app.include_router(command_routes.router)
     app.include_router(settings_routes.router)
+    app.include_router(job_positions_routes.router)
     app.include_router(enhancement_routes.router)
     app.include_router(ws_routes.router)
 

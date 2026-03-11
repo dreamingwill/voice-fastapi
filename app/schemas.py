@@ -4,12 +4,37 @@ from typing_extensions import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
+class JobPositionCreate(BaseModel):
+    name: str
+    level: int = Field(..., ge=1, le=8)
+    description: Optional[str] = None
+
+
+class JobPositionUpdate(BaseModel):
+    name: Optional[str] = None
+    level: Optional[int] = Field(None, ge=1, le=8)
+    description: Optional[str] = None
+
+
+class JobPositionResponse(BaseModel):
+    id: int
+    name: str
+    level: int
+    description: Optional[str] = None
+
+
+class JobPositionsListResponse(BaseModel):
+    items: List[JobPositionResponse]
+    total: int
+
+
 class UserCreateAndUpdate(BaseModel):
     username: str
     identity: Optional[str] = None
     account: Optional[str] = None
     phone: Optional[str] = None
     status: Optional[str] = None
+    position_id: Optional[int] = None
 
 
 class UserResponse(BaseModel):
@@ -20,6 +45,8 @@ class UserResponse(BaseModel):
     phone: Optional[str] = None
     status: str
     has_voiceprint: bool
+    position_id: Optional[int] = None
+    position: Optional[JobPositionResponse] = None
 
 
 class UsersListResponse(BaseModel):
@@ -245,6 +272,10 @@ class SystemSettingsUpdate(BaseModel):
 
 
 __all__ = [
+    "JobPositionCreate",
+    "JobPositionUpdate",
+    "JobPositionResponse",
+    "JobPositionsListResponse",
     "UserCreateAndUpdate",
     "UserResponse",
     "UsersListResponse",

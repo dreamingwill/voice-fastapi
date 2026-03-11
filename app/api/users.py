@@ -10,8 +10,9 @@ from sqlalchemy.orm import Session
 
 from ..auth import get_current_user, require_admin
 from ..database import get_db
-from ..models import User
+from ..models import JobPosition, User
 from ..schemas import (
+    JobPositionResponse,
     TokenPayload,
     UserCreateAndUpdate,
     UserResponse,
@@ -34,6 +35,14 @@ def _clean_phone(value: Optional[str]) -> Optional[str]:
 
 
 def _user_to_response(user: User) -> UserResponse:
+    pos = None
+    if user.position is not None:
+        pos = JobPositionResponse(
+            id=user.position.id,
+            name=user.position.name,
+            level=user.position.level,
+            description=user.position.description,
+        )
     return UserResponse(
         id=user.id,
         username=user.username,
@@ -42,6 +51,8 @@ def _user_to_response(user: User) -> UserResponse:
         phone=user.phone,
         status=user.status or "enabled",
         has_voiceprint=bool(user.embedding),
+        position_id=user.position_id,
+        position=pos,
     )
 
 
@@ -94,6 +105,7 @@ async def get_users(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     keyword: Optional[str] = Query(None, description="Search by username"),
+    position_id: Optional[int] = Query(None, description="Filter by job position"),
     db: Session = Depends(get_db),
     current_user: TokenPayload = Depends(get_current_user),
 ):
@@ -101,6 +113,8 @@ async def get_users(
     if keyword:
         like_value = f"%{keyword}%"
         query = query.filter(or_(User.username.ilike(like_value), User.account.ilike(like_value)))
+    if position_id is not None:
+        query = query.filter(User.position_id == position_id)
     total = query.with_entities(func.count(User.id)).scalar() or 0
     items = (
         query.order_by(User.id.desc())
@@ -142,12 +156,17 @@ async def create_user(
 
     status_value = _normalize_status(payload.status)
     phone_value = _clean_phone(payload.phone)
+    if payload.position_id is not None:
+        pos = db.query(JobPosition).filter(JobPosition.id == payload.position_id).first()
+        if not pos:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Job position not found")
     user = User(
         username=payload.username,
         identity=payload.identity,
         account=account,
         phone=phone_value,
         status=status_value,
+        position_id=payload.position_id,
     )
     db.add(user)
     db.commit()
@@ -214,6 +233,16 @@ async def update_user_by_id(
         if status_value != user.status:
             changes["status"] = {"from": user.status, "to": status_value}
             user.status = status_value
+
+    if payload.position_id is not None and payload.position_id != user.position_id:
+        pos = db.query(JobPosition).filter(JobPosition.id == payload.position_id).first()
+        if not pos:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Job position not found")
+        changes["position_id"] = {"from": user.position_id, "to": payload.position_id}
+        user.position_id = payload.position_id
+    elif payload.position_id is None and "position_id" in (payload.model_fields_set or set()):
+        changes["position_id"] = {"from": user.position_id, "to": None}
+        user.position_id = None
 
     db.commit()
     db.refresh(user)

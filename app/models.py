@@ -11,9 +11,20 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
+from sqlalchemy.orm import relationship
 
 from .database import Base
 from .utils import now_utc
+
+
+class JobPosition(Base):
+    __tablename__ = "job_positions"
+    id          = Column(Integer, primary_key=True, index=True)
+    name        = Column(String(64), unique=True, nullable=False)
+    level       = Column(Integer, nullable=False)   # 1~8
+    description = Column(String(255), nullable=True)
+    created_at  = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at  = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 class User(Base):
@@ -26,6 +37,8 @@ class User(Base):
     phone = Column(String, nullable=True)
     status = Column(String, nullable=False, default="enabled")
     embedding = Column(Text, nullable=True)
+    position_id = Column(Integer, ForeignKey("job_positions.id", ondelete="SET NULL"), nullable=True)
+    position    = relationship("JobPosition", lazy="select")
 
 
 class AdminAccount(Base):
@@ -172,6 +185,7 @@ class SystemSettings(Base):
 
 
 __all__ = [
+    "JobPosition",
     "User",
     "AdminAccount",
     "EventLog",

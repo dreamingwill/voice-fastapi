@@ -24,6 +24,8 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     _ensure_user_columns()
     _ensure_command_code_column()
+    _ensure_job_positions_table()
+    _ensure_user_position_column()
     _ensure_admin_account()
     _ensure_system_settings()
 
@@ -60,6 +62,24 @@ def _ensure_command_code_column() -> None:
         return
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE commands ADD COLUMN code VARCHAR(64)"))
+
+
+def _ensure_job_positions_table() -> None:
+    inspector = inspect(engine)
+    if "job_positions" not in inspector.get_table_names():
+        Base.metadata.tables["job_positions"].create(bind=engine)
+
+
+def _ensure_user_position_column() -> None:
+    inspector = inspect(engine)
+    if "users" not in inspector.get_table_names():
+        return
+    existing = {col["name"] for col in inspector.get_columns("users")}
+    if "position_id" not in existing:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE users ADD COLUMN position_id INTEGER REFERENCES job_positions(id)"
+            ))
 
 
 def get_db():
