@@ -688,7 +688,16 @@ class AsrSession:
             return True
 
         if msg_type == "control.ping":
-            await self.ws.send_json({"type": "control.pong", "time": int(time.time() * 1000)})
+            sent_at = data.get("sentAt")
+            server_time = int(time.time() * 1000)
+            await self.ws.send_json(
+                {
+                    "type": "control.pong",
+                    "sentAt": sent_at,
+                    "serverReceivedAt": server_time,
+                    "serverSentAt": int(time.time() * 1000),
+                }
+            )
             return False
 
         return False
