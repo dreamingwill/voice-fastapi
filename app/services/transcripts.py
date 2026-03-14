@@ -20,6 +20,9 @@ def append_transcript_segment(
     locale: Optional[str] = None,
     channel: Optional[str] = None,
     operator: Optional[str] = None,
+    recording_file: Optional[str] = None,
+    command_forward_status: Optional[str] = None,
+    command_forward_detail: Optional[str] = None,
     status: str = "in_progress",
 ) -> None:
     """Upsert transcript + segments for a session-final chunk."""
@@ -70,6 +73,9 @@ def append_transcript_segment(
             locale=locale,
             channel=channel,
             operator=operator,
+            recording_file=recording_file,
+            command_forward_status=command_forward_status,
+            command_forward_detail=command_forward_detail,
         )
 
         db.commit()
@@ -96,6 +102,34 @@ def finalize_transcript(
         db.commit()
 
 
+def update_transcript_metadata(
+    *,
+    session_id: Optional[str],
+    recording_file: Optional[str] = None,
+    command_forward_status: Optional[str] = None,
+    command_forward_detail: Optional[str] = None,
+) -> None:
+    if not session_id:
+        return
+    with SessionLocal() as db:
+        transcript = db.query(Transcript).filter(Transcript.session_id == session_id).first()
+        if transcript is None:
+            return
+        changed = False
+        if recording_file is not None and recording_file != transcript.recording_file:
+            transcript.recording_file = recording_file
+            changed = True
+        if command_forward_status is not None and command_forward_status != transcript.command_forward_status:
+            transcript.command_forward_status = command_forward_status
+            changed = True
+        if command_forward_detail is not None and command_forward_detail != transcript.command_forward_detail:
+            transcript.command_forward_detail = command_forward_detail
+            changed = True
+        if changed:
+            transcript.updated_at = now_utc()
+            db.commit()
+
+
 def _dumps_json(payload: Optional[Any]) -> Optional[str]:
     if payload is None:
         return None
@@ -116,6 +150,9 @@ def _update_transcript_summary(
     locale: Optional[str],
     channel: Optional[str],
     operator: Optional[str],
+    recording_file: Optional[str],
+    command_forward_status: Optional[str],
+    command_forward_detail: Optional[str],
 ) -> None:
     prev_count = int(transcript.segments_count or 0)
     new_count = prev_count + 1
@@ -144,6 +181,9 @@ def _update_transcript_summary(
     transcript.locale = transcript.locale or locale
     transcript.channel = transcript.channel or channel
     transcript.operator = transcript.operator or operator
+    transcript.recording_file = transcript.recording_file or recording_file
+    transcript.command_forward_status = command_forward_status or transcript.command_forward_status
+    transcript.command_forward_detail = command_forward_detail or transcript.command_forward_detail
     transcript.updated_at = now_utc()
 
     _update_speakers_field(transcript, speaker, similarity)
@@ -176,4 +216,4 @@ def _update_speakers_field(
     transcript.dominant_speaker = (dominant or {}).get("name")
 
 
-__all__ = ["append_transcript_segment", "finalize_transcript"]
+__all__ = ["append_transcript_segment", "finalize_transcript", "update_transcript_metadata"]

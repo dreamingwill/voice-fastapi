@@ -3,14 +3,14 @@ import os
 import wave
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 from ..config import RECORDINGS_DIR, RECORDINGS_MAX_COUNT
 
 logger = logging.getLogger("asr.recordings")
 
 
-def open_recording(session_id: str, sample_rate: int) -> Optional[wave.Wave_write]:
+def open_recording(session_id: str, sample_rate: int) -> Tuple[Optional[wave.Wave_write], Optional[str]]:
     try:
         recordings_path = Path(RECORDINGS_DIR)
         recordings_path.mkdir(parents=True, exist_ok=True)
@@ -21,10 +21,10 @@ def open_recording(session_id: str, sample_rate: int) -> Optional[wave.Wave_writ
         writer.setsampwidth(2)  # PCM16 = 2 bytes
         writer.setframerate(sample_rate)
         logger.info("recording.open session=%s file=%s", session_id, filename)
-        return writer
+        return writer, filename.name
     except Exception as exc:
         logger.warning("recording.open failed session=%s error=%s", session_id, exc)
-        return None
+        return None, None
 
 
 def close_recording(writer: Optional[wave.Wave_write]) -> None:

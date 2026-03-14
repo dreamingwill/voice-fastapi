@@ -97,6 +97,9 @@ class Transcript(Base):
     locale = Column(String, nullable=True)
     channel = Column(String, nullable=True)
     operator = Column(String, nullable=True)
+    recording_file = Column(String, nullable=True)
+    command_forward_status = Column(String, nullable=True)
+    command_forward_detail = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
     updated_at = Column(
         DateTime(timezone=True),

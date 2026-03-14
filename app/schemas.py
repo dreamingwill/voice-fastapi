@@ -165,6 +165,9 @@ class TranscriptResponse(BaseModel):
     locale: Optional[str] = None
     channel: Optional[str] = None
     operator: Optional[str] = None
+    recording_file: Optional[str] = None
+    command_forward_status: Optional[str] = None
+    command_forward_detail: Optional[str] = None
     created_at: str
     updated_at: Optional[str] = None
 

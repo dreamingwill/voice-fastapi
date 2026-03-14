@@ -12,7 +12,7 @@ from pydantic import ValidationError
 from ..command_forwarder import forward_command_match
 from ..recordings import cleanup_old_recordings, close_recording, open_recording
 from ..events import record_event_log
-from ..transcripts import append_transcript_segment, finalize_transcript
+from ..transcripts import append_transcript_segment, finalize_transcript, update_transcript_metadata
 from ...auth import validate_access_token
 from ..audio_enhancement import AudioEnhancementPipeline, EnhancementConfig
 from ..commands import get_command_service
@@ -103,6 +103,7 @@ class AsrSession:
         self._last_vad_result: Optional[VadResult] = None
         self.save_audio = False
         self._wav_writer = None
+        self._recording_filename: Optional[str] = None
 
     def _concat_cur_utt_audio(self) -> np.ndarray:
         if not self.cur_utt_audio:
@@ -355,7 +356,7 @@ class AsrSession:
         ]
         latency_ms = int((time.perf_counter() - self.cur_utt_started_at) * 1000)
         command_match = self._evaluate_command_match(text)
-        self._maybe_forward_command(command_match, speaker)
+        forward_state = self._maybe_forward_command(command_match, speaker)
         await self.ws.send_json(
             {
                 "type": "final",
@@ -398,6 +399,9 @@ class AsrSession:
                 "end_ms": _ms(end_sample, self.sample_rate_client),
                 "topk": meta_topk,
                 "command_match": command_match,
+                "recording_file": self._recording_filename,
+                "command_forward_status": forward_state.get("status"),
+                "command_forward_detail": forward_state.get("detail"),
             },
         )
 
@@ -409,6 +413,9 @@ class AsrSession:
             end_ms=_ms(end_sample, self.sample_rate_client),
             topk=topk,
             candidate=candidate,
+            recording_file=self._recording_filename,
+            command_forward_status=forward_state.get("status"),
+            command_forward_detail=forward_state.get("detail"),
         )
 
         metrics = getattr(self.app.state, "session_metrics", None)
@@ -438,6 +445,9 @@ class AsrSession:
         end_ms: int,
         topk: List[SpeakerCandidate],
         candidate: Optional[SpeakerCandidate],
+        recording_file: Optional[str],
+        command_forward_status: Optional[str],
+        command_forward_detail: Optional[str],
     ) -> None:
         if not self.session_id or not text:
             return
@@ -455,6 +465,9 @@ class AsrSession:
             locale=self.session_info.get("locale"),
             channel=self.session_info.get("channel"),
             operator=self._get_operator_label(),
+            recording_file=recording_file,
+            command_forward_status=command_forward_status,
+            command_forward_detail=command_forward_detail,
         )
 
     async def handle_binary_audio(self, data: bytes):
@@ -771,8 +784,9 @@ class AsrSession:
         )
 
         self.save_audio = bool(data.get("saveAudio", False))
+        self._recording_filename = None
         if self.save_audio:
-            self._wav_writer = open_recording(session_id or "unknown", self.sample_rate_client)
+            self._wav_writer, self._recording_filename = open_recording(session_id or "unknown", self.sample_rate_client)
 
         await self._send_meta(
             {
@@ -804,6 +818,7 @@ class AsrSession:
                 "locale": self.session_info.get("locale"),
                 "command_matching_enabled": self.command_matching_enabled,
                 "speaker_recognition_enabled": self.speaker_recognition_enabled,
+                "recording_file": self._recording_filename,
             },
         )
 
@@ -855,15 +870,20 @@ class AsrSession:
         payload["score"] = result.score
         return payload
 
-    def _maybe_forward_command(self, command_match: Dict[str, Any], speaker: str) -> None:
+    def _maybe_forward_command(self, command_match: Dict[str, Any], speaker: str) -> Dict[str, Optional[str]]:
         code = (command_match or {}).get("code")
         if not code:
-            return
+            return {"status": None, "detail": None}
 
         async def _run():
             try:
                 error = await forward_command_match(code=code, speaker=speaker)
                 if error:
+                    update_transcript_metadata(
+                        session_id=self.session_id,
+                        command_forward_status="failed",
+                        command_forward_detail=error,
+                    )
                     try:
                         await self.ws.send_json(
                             {
@@ -875,8 +895,19 @@ class AsrSession:
                         )
                     except Exception:
                         pass
+                else:
+                    update_transcript_metadata(
+                        session_id=self.session_id,
+                        command_forward_status="sent",
+                        command_forward_detail=None,
+                    )
             except Exception as exc:  # pragma: no cover - defensive logging
                 logger.warning("command.forward failed code=%s error=%s", code, exc)
+                update_transcript_metadata(
+                    session_id=self.session_id,
+                    command_forward_status="failed",
+                    command_forward_detail=exc.__class__.__name__,
+                )
 
         # Block forwarding if speaker is unknown
         if not speaker or speaker == "unknown":
@@ -891,10 +922,11 @@ class AsrSession:
                 code,
                 speaker,
             )
-            return
+            return {"status": "blocked", "detail": "unknown_speaker"}
 
         # otherwise forward asynchronously
         asyncio.create_task(_run())
+        return {"status": "pending", "detail": None}
 
 
 __all__ = ["AsrSession"]

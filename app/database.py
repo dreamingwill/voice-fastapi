@@ -24,6 +24,7 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     _ensure_user_columns()
     _ensure_command_code_column()
+    _ensure_transcript_columns()
     _ensure_job_positions_table()
     _ensure_user_position_column()
     _ensure_admin_account()
@@ -62,6 +63,20 @@ def _ensure_command_code_column() -> None:
         return
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE commands ADD COLUMN code VARCHAR(64)"))
+
+
+def _ensure_transcript_columns() -> None:
+    inspector = inspect(engine)
+    if "transcripts" not in inspector.get_table_names():
+        return
+    existing_columns = {col["name"] for col in inspector.get_columns("transcripts")}
+    with engine.begin() as conn:
+        if "recording_file" not in existing_columns:
+            conn.execute(text("ALTER TABLE transcripts ADD COLUMN recording_file VARCHAR(255)"))
+        if "command_forward_status" not in existing_columns:
+            conn.execute(text("ALTER TABLE transcripts ADD COLUMN command_forward_status VARCHAR(64)"))
+        if "command_forward_detail" not in existing_columns:
+            conn.execute(text("ALTER TABLE transcripts ADD COLUMN command_forward_detail TEXT"))
 
 
 def _ensure_job_positions_table() -> None:

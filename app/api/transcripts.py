@@ -112,6 +112,9 @@ def _serialize_transcript(model: Transcript) -> Dict[str, Any]:
         "locale": model.locale,
         "channel": model.channel,
         "operator": model.operator,
+        "recording_file": model.recording_file,
+        "command_forward_status": model.command_forward_status,
+        "command_forward_detail": model.command_forward_detail,
         "created_at": to_iso(created_at),
         "updated_at": to_iso(updated_at) if updated_at else None,
     }
