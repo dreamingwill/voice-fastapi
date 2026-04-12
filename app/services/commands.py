@@ -1,10 +1,12 @@
+import json
 import logging
 import os
 import re
 from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
 from threading import RLock
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 from rank_bm25 import BM25Okapi
@@ -38,6 +40,11 @@ PHONETIC_THRESHOLD = float(os.getenv("COMMAND_PHONETIC_THRESHOLD", "0.68"))
 PHONETIC_TONE = os.getenv("COMMAND_PHONETIC_TONE", "false").strip().lower() in {"1", "true", "yes", "on"}
 NUMERIC_MISMATCH_PENALTY = float(os.getenv("COMMAND_NUMERIC_MISMATCH_PENALTY", "0.4"))
 NUMERIC_MISSING_PENALTY = float(os.getenv("COMMAND_NUMERIC_MISSING_PENALTY", "0.6"))
+DEFAULT_COMMAND_TEXT_ALIASES_PATH = (
+    Path(os.getenv("COMMAND_TEXT_ALIASES_PATH", ""))
+    if os.getenv("COMMAND_TEXT_ALIASES_PATH")
+    else Path(__file__).resolve().parents[2] / "config" / "command_text_aliases.json"
+)
 
 
 COMMAND_STATUS_ENABLED = "enabled"
@@ -88,6 +95,58 @@ def _normalize_status(value: str) -> str:
     normalized = (value or "").strip().lower()
     if normalized not in _VALID_COMMAND_STATUSES:
         raise ValueError("Invalid command status")
+    return normalized
+
+
+def _normalize_alias_mapping(data: Any) -> Dict[str, str]:
+    if not isinstance(data, dict):
+        return {}
+    normalized: Dict[str, str] = {}
+    for key, value in data.items():
+        src = str(key or "").strip()
+        dst = str(value or "").strip()
+        if src and dst and src != dst:
+            normalized[src] = dst
+    return normalized
+
+
+@lru_cache(maxsize=1)
+def _load_command_text_aliases() -> Dict[str, Dict[str, str]]:
+    path = DEFAULT_COMMAND_TEXT_ALIASES_PATH
+    if not path.is_file():
+        return {"exact_aliases": {}, "replacements": {}}
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception as exc:
+        logger.warning("command.aliases load_failed path=%s error=%s", path, exc)
+        return {"exact_aliases": {}, "replacements": {}}
+    if not isinstance(data, dict):
+        return {"exact_aliases": {}, "replacements": {}}
+    return {
+        "exact_aliases": _normalize_alias_mapping(data.get("exact_aliases")),
+        "replacements": _normalize_alias_mapping(data.get("replacements")),
+    }
+
+
+def normalize_command_text(text: str) -> str:
+    content = (text or "").strip()
+    if not content:
+        return ""
+    aliases = _load_command_text_aliases()
+    exact_aliases = aliases.get("exact_aliases", {})
+    if content in exact_aliases:
+        normalized = exact_aliases[content]
+        logger.info("command.normalize type=exact original=%s normalized=%s", content, normalized)
+        return normalized
+    normalized = content
+    replacements = aliases.get("replacements", {})
+    for src, dst in sorted(replacements.items(), key=lambda item: len(item[0]), reverse=True):
+        if src in normalized:
+            normalized = normalized.replace(src, dst)
+    normalized = normalized.strip()
+    if normalized != content:
+        logger.info("command.normalize type=replace original=%s normalized=%s", content, normalized)
     return normalized
 
 
@@ -231,6 +290,8 @@ class CommandMatchResult:
     score: float
     command_id: Optional[int] = None
     command_code: Optional[str] = None
+    original_text: str = ""
+    normalized_text: str = ""
 
 
 @dataclass
@@ -606,36 +667,42 @@ class CommandService:
         threshold_override: Optional[float] = None,
         settings: Optional[CommandSettings] = None,
     ) -> CommandMatchResult:
-        content = (text or "").strip()
+        original_text = (text or "").strip()
+        if not original_text:
+            return CommandMatchResult(False, None, 0.0, original_text="", normalized_text="")
+        content = normalize_command_text(original_text)
         if not content:
-            return CommandMatchResult(False, None, 0.0)
+            return CommandMatchResult(False, None, 0.0, original_text=original_text, normalized_text="")
 
         # Ignore user scope; use global settings
         current_settings = settings or self.get_settings(GLOBAL_USER_ID)
         if not current_settings.enable_matching:
-            return CommandMatchResult(False, None, 0.0)
+            return CommandMatchResult(False, None, 0.0, original_text=original_text, normalized_text=content)
 
         threshold = threshold_override or current_settings.match_threshold or self.default_threshold
 
         state = self._matcher.get_state(GLOBAL_USER_ID)
         if not isinstance(state, Bm25MatcherState):
             raise ValueError("Unexpected matcher state for BM25 backend")
-        return self._match_with_bm25(content, state, threshold)
+        return self._match_with_bm25(content, state, threshold, original_text=original_text)
 
     def _match_with_bm25(
         self,
         content: str,
         state: Bm25MatcherState,
         threshold: float,
+        *,
+        original_text: Optional[str] = None,
     ) -> CommandMatchResult:
+        raw_text = (original_text or content or "").strip()
         if not state.texts or state.bm25 is None:
-            return CommandMatchResult(False, None, 0.0)
+            return CommandMatchResult(False, None, 0.0, original_text=raw_text, normalized_text=content)
         normalized_query = _normalize_for_matching(content)
         query_pinyin = _build_pinyin(content) if PHONETIC_ENABLED else ""
         query_tokens = _tokenize(content)
         query_ordinals, query_numbers = _extract_numeric_tokens(content)
         if not query_tokens and not query_pinyin:
-            return CommandMatchResult(False, None, 0.0)
+            return CommandMatchResult(False, None, 0.0, original_text=raw_text, normalized_text=content)
         candidate_indices = set()
         if state.bm25 is not None and query_tokens:
             scores = np.asarray(state.bm25.get_scores(query_tokens), dtype=np.float32)
@@ -662,7 +729,7 @@ class CommandService:
                         candidate_indices.update(int(idx) for idx in phonetic_indices)
         if not candidate_indices:
             logger.info("command.match no_candidate query=%s", content)
-            return CommandMatchResult(False, None, 0.0)
+            return CommandMatchResult(False, None, 0.0, original_text=raw_text, normalized_text=content)
         best_score = 0.0
         best_text_score = 0.0
         best_pinyin_score: Optional[float] = None
@@ -717,7 +784,7 @@ class CommandService:
         normalized = best_final_score / 100.0
         if not best_text:
             logger.info("command.match no_candidate query=%s", content)
-            return CommandMatchResult(False, None, normalized)
+            return CommandMatchResult(False, None, normalized, original_text=raw_text, normalized_text=content)
         text_norm = best_text_score / 100.0
         pinyin_norm = best_pinyin_score / 100.0 if best_pinyin_score is not None else None
         if text_norm >= threshold:
@@ -739,7 +806,15 @@ class CommandService:
                 ",".join(str(value) for value in best_query_numbers),
                 ",".join(str(value) for value in best_candidate_numbers),
             )
-            return CommandMatchResult(True, best_text, normalized, command_id=best_id, command_code=best_code)
+            return CommandMatchResult(
+                True,
+                best_text,
+                normalized,
+                command_id=best_id,
+                command_code=best_code,
+                original_text=raw_text,
+                normalized_text=content,
+            )
         if PHONETIC_ENABLED and pinyin_norm is not None and pinyin_norm >= PHONETIC_THRESHOLD:
             logger.info(
                 "command.match result=matched type=phonetic query=%s candidate=%s id=%s code=%s text_score=%.2f final_score=%.2f pinyin_score=%s numeric_factor=%.2f threshold=%.2f query_pinyin=%s candidate_pinyin=%s query_ordinals=%s candidate_ordinals=%s query_numbers=%s candidate_numbers=%s",
@@ -759,7 +834,15 @@ class CommandService:
                 ",".join(str(value) for value in best_query_numbers),
                 ",".join(str(value) for value in best_candidate_numbers),
             )
-            return CommandMatchResult(True, best_text, normalized, command_id=best_id, command_code=best_code)
+            return CommandMatchResult(
+                True,
+                best_text,
+                normalized,
+                command_id=best_id,
+                command_code=best_code,
+                original_text=raw_text,
+                normalized_text=content,
+            )
         if normalized < threshold:
             logger.info(
                 "command.match result=not_matched type=below_threshold query=%s candidate=%s id=%s code=%s text_score=%.2f final_score=%.2f pinyin_score=%s numeric_factor=%.2f threshold=%.2f query_pinyin=%s candidate_pinyin=%s query_ordinals=%s candidate_ordinals=%s query_numbers=%s candidate_numbers=%s",
@@ -779,7 +862,7 @@ class CommandService:
                 ",".join(str(value) for value in best_query_numbers),
                 ",".join(str(value) for value in best_candidate_numbers),
             )
-            return CommandMatchResult(False, None, normalized)
+            return CommandMatchResult(False, None, normalized, original_text=raw_text, normalized_text=content)
         logger.info(
             "command.match result=matched type=blend query=%s candidate=%s id=%s code=%s text_score=%.2f final_score=%.2f pinyin_score=%s numeric_factor=%.2f threshold=%.2f query_pinyin=%s candidate_pinyin=%s query_ordinals=%s candidate_ordinals=%s query_numbers=%s candidate_numbers=%s",
             content,
@@ -798,7 +881,15 @@ class CommandService:
             ",".join(str(value) for value in best_query_numbers),
             ",".join(str(value) for value in best_candidate_numbers),
         )
-        return CommandMatchResult(True, best_text, normalized, command_id=best_id, command_code=best_code)
+        return CommandMatchResult(
+            True,
+            best_text,
+            normalized,
+            command_id=best_id,
+            command_code=best_code,
+            original_text=raw_text,
+            normalized_text=content,
+        )
 
 
 @lru_cache(maxsize=1)

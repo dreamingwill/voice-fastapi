@@ -336,6 +336,11 @@ class AsrSession:
         ]
         latency_ms = int((time.perf_counter() - self.cur_utt_started_at) * 1000)
         command_match = self._evaluate_command_match(text)
+        display_text = (
+            (command_match.get("command") if command_match.get("matched") else None)
+            or command_match.get("normalized_text")
+            or text
+        )
         forward_state = self._maybe_forward_command(command_match, speaker)
         await self.ws.send_json(
             {
@@ -343,7 +348,8 @@ class AsrSession:
                 "segment_id": self.segment_id,
                 "start_ms": _ms(self.cur_utt_start_sample, self.sample_rate_client),
                 "end_ms": _ms(end_sample, self.sample_rate_client),
-                "text": text,
+                "text": display_text,
+                "original_text": text,
                 "speaker": speaker,
                 "similarity": similarity,
                 "topk": meta_topk,
@@ -357,7 +363,7 @@ class AsrSession:
             speaker,
             similarity,
             latency_ms,
-            text,
+            display_text,
             meta_topk,
         )
 
@@ -372,7 +378,8 @@ class AsrSession:
             category="final",
             authorized=speaker != "unknown",
             payload={
-                "text": text,
+                "text": display_text,
+                "original_text": text,
                 "segment_id": self.segment_id,
                 "similarity": similarity,
                 "start_ms": _ms(self.cur_utt_start_sample, self.sample_rate_client),
@@ -386,7 +393,7 @@ class AsrSession:
         )
 
         self._persist_transcript_segment(
-            text=text,
+            text=display_text,
             speaker=speaker,
             similarity=similarity,
             start_ms=_ms(self.cur_utt_start_sample, self.sample_rate_client),
@@ -825,6 +832,9 @@ class AsrSession:
             if result.command_id is not None:
                 payload["command_id"] = result.command_id
         payload["score"] = result.score
+        if result.normalized_text and result.normalized_text != result.original_text:
+            payload["original_text"] = result.original_text
+            payload["normalized_text"] = result.normalized_text
         return payload
 
     def _maybe_forward_command(self, command_match: Dict[str, Any], speaker: str) -> Dict[str, Optional[str]]:
