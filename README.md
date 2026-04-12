@@ -39,6 +39,8 @@ pip install -r requirements.txt
 
 ## 四、启动服务
 
+### 本地手动启动
+
 ```bash
 bash launch.sh
 ```
@@ -57,6 +59,30 @@ python main.py \
   --decoder ./models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/decoder-epoch-99-avg-1.onnx \
   --joiner ./models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/joiner-epoch-99-avg-1.onnx
 ```
+
+### Linux systemd 部署
+
+当前线上 Linux 部署是通过 `systemd -> start.sh` 启动服务。
+
+在这套部署方式下，指令转发地址默认以 [start.sh](/Users/zrh/Projects/speak/voice-fastapi/start.sh:4) 中的配置为准：
+
+- `COMMAND_FORWARD_URL`
+- `COMMAND_FORWARD_TIMEOUT`
+
+如果只是你在普通终端里手动执行：
+
+```bash
+export COMMAND_FORWARD_URL=http://xxx
+```
+
+这不会影响 `systemctl` 管理的服务进程。因为 `systemd` 默认不会继承你当前 shell 的环境变量。
+
+所以按当前仓库的部署约定：
+
+- 修改 Linux 服务使用的转发地址，优先直接修改 `start.sh`
+- 修改后执行 `sudo systemctl restart <service-name>` 让服务生效
+
+如果后面希望把地址配置从脚本中移出去，再考虑改成 `systemd` 的 `Environment=` 或 `EnvironmentFile=`
 
 ## 五、查看 API
 

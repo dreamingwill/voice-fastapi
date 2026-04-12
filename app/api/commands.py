@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials
 
 from ..auth import TokenPayload, require_admin, security, validate_access_token
-from ..config import COMMAND_FORWARD_URL
+from .. import config
 from ..database import SessionLocal
 from ..models import Command, User
 from ..schemas import (
@@ -75,7 +75,7 @@ async def toggle_command_matching(
 
 @router.post("/forward", response_model=CommandForwardResponse, status_code=status.HTTP_200_OK)
 async def forward_command(payload: CommandForwardRequest):
-    if not COMMAND_FORWARD_URL:
+    if not config.COMMAND_FORWARD_URL:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Command forward URL not configured",
@@ -136,7 +136,7 @@ async def forward_command(payload: CommandForwardRequest):
         logger.warning(
             "command.forward downstream status=%s url=%s body=%s",
             status_code,
-            COMMAND_FORWARD_URL,
+            config.COMMAND_FORWARD_URL,
             body_snippet,
         )
         raise HTTPException(
@@ -147,7 +147,7 @@ async def forward_command(payload: CommandForwardRequest):
         logger.warning(
             "command.forward network error=%s url=%s",
             exc.__class__.__name__,
-            COMMAND_FORWARD_URL,
+            config.COMMAND_FORWARD_URL,
         )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,

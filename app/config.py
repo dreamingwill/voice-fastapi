@@ -18,7 +18,7 @@ ADMIN_ROLE = os.getenv("ADMIN_ROLE", "admin")
 DEFAULT_ALLOWED_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173"
 
 DEFAULT_CONFIG_PATH = os.getenv("VOICE_SERVER_CONFIG", "config/app_config.json")
-COMMAND_FORWARD_URL = os.getenv("COMMAND_FORWARD_URL")
+COMMAND_FORWARD_URL = os.getenv("COMMAND_FORWARD_URL", "")
 COMMAND_FORWARD_TIMEOUT = float(os.getenv("COMMAND_FORWARD_TIMEOUT", "5"))
 print("当前 COMMAND_FORWARD_URL =", COMMAND_FORWARD_URL)
 
@@ -89,6 +89,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rule1_min_trailing_silence", type=float, default=0.8)
     parser.add_argument("--rule2_min_trailing_silence", type=float, default=0.4)
     parser.add_argument("--rule3_min_utterance_length", type=int, default=15)
+    parser.add_argument("--command_forward_url", type=str, default="")
+    parser.add_argument("--command_forward_timeout", type=float, default=5.0)
     parser.add_argument("--vad_pre_roll_ms", type=int, default=int(os.getenv("PRE_ROLL_MS", "300")))
     parser.add_argument("--vad_post_roll_ms", type=int, default=int(os.getenv("POST_ROLL_MS", "700")))
     parser.add_argument("--vad_snr_open_db", type=float, default=float(os.getenv("SNR_OPEN_DB", "10")))
@@ -116,6 +118,8 @@ def _config_parser() -> argparse.ArgumentParser:
 
 
 def parse_args(argv: Optional[Any] = None):
+    global COMMAND_FORWARD_URL, COMMAND_FORWARD_TIMEOUT
+
     config_only = _config_parser()
     config_args, remaining = config_only.parse_known_args(argv)
     config_path = config_args.config or DEFAULT_CONFIG_PATH
@@ -129,4 +133,12 @@ def parse_args(argv: Optional[Any] = None):
     args = parser.parse_args(remaining)
     if config_values:
         args.config = config_path
+
+    if "COMMAND_FORWARD_URL" in os.environ:
+        args.command_forward_url = os.environ["COMMAND_FORWARD_URL"]
+    if "COMMAND_FORWARD_TIMEOUT" in os.environ:
+        args.command_forward_timeout = float(os.environ["COMMAND_FORWARD_TIMEOUT"])
+
+    COMMAND_FORWARD_URL = args.command_forward_url.strip()
+    COMMAND_FORWARD_TIMEOUT = float(args.command_forward_timeout)
     return args

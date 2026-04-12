@@ -4,7 +4,7 @@ from typing import Optional
 
 import httpx
 
-from ..config import COMMAND_FORWARD_TIMEOUT, COMMAND_FORWARD_URL
+from .. import config
 
 logger = logging.getLogger("command.forwarder")
 
@@ -18,7 +18,7 @@ async def forward_command_match(
     """
     Send a POST notification when a command has been recognized.
     """
-    if not COMMAND_FORWARD_URL or not code:
+    if not config.COMMAND_FORWARD_URL or not code:
         return "missing_forward_url_or_code"
     timestamp = (created_at or datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
     payload = {
@@ -28,8 +28,8 @@ async def forward_command_match(
     }
 
     try:
-        async with httpx.AsyncClient(timeout=COMMAND_FORWARD_TIMEOUT) as client:
-            response = await client.post(COMMAND_FORWARD_URL, json=payload)
+        async with httpx.AsyncClient(timeout=config.COMMAND_FORWARD_TIMEOUT) as client:
+            response = await client.post(config.COMMAND_FORWARD_URL, json=payload)
             response.raise_for_status()
     except httpx.HTTPStatusError as exc:  # pragma: no cover - defensive logging
         status_code = exc.response.status_code if exc.response else "unknown"
@@ -41,7 +41,7 @@ async def forward_command_match(
                 body_snippet = ""
         logger.warning(
             "command.forward request failed url=%s code=%s status=%s body=%s",
-            COMMAND_FORWARD_URL,
+            config.COMMAND_FORWARD_URL,
             code,
             status_code,
             body_snippet,
@@ -50,16 +50,16 @@ async def forward_command_match(
     except httpx.RequestError as exc:  # pragma: no cover - defensive logging
         logger.warning(
             "command.forward request failed url=%s code=%s network_error=%s",
-            COMMAND_FORWARD_URL,
+            config.COMMAND_FORWARD_URL,
             code,
             exc.__class__.__name__,
         )
         return f"network_error={exc.__class__.__name__}"
     except Exception as exc:  # pragma: no cover - defensive logging
-        logger.warning("command.forward request failed url=%s code=%s error=%s", COMMAND_FORWARD_URL, code, exc)
+        logger.warning("command.forward request failed url=%s code=%s error=%s", config.COMMAND_FORWARD_URL, code, exc)
         return f"unexpected_error={exc.__class__.__name__}"
 
-    logger.info("command.forward sent url=%s code=%s speaker=%s", COMMAND_FORWARD_URL, code, speaker or "")
+    logger.info("command.forward sent url=%s code=%s speaker=%s", config.COMMAND_FORWARD_URL, code, speaker or "")
     return None
 
 
@@ -79,7 +79,7 @@ async def forward_command_manual(
     """
     Send a POST notification for manual command forwarding.
     """
-    if not COMMAND_FORWARD_URL or not code:
+    if not config.COMMAND_FORWARD_URL or not code:
         raise ValueError("Command forward URL or code is missing")
     timestamp = _resolve_timestamp(created_at=created_at, create_time=create_time)
     payload = {
@@ -88,21 +88,21 @@ async def forward_command_manual(
         "speaker": speaker or "",
     }
 
-    async with httpx.AsyncClient(timeout=COMMAND_FORWARD_TIMEOUT) as client:
-        response = await client.post(COMMAND_FORWARD_URL, json=payload)
+    async with httpx.AsyncClient(timeout=config.COMMAND_FORWARD_TIMEOUT) as client:
+        response = await client.post(config.COMMAND_FORWARD_URL, json=payload)
         response.raise_for_status()
 
-    logger.info("command.forward manual sent url=%s code=%s speaker=%s", COMMAND_FORWARD_URL, code, speaker or "")
+    logger.info("command.forward manual sent url=%s code=%s speaker=%s", config.COMMAND_FORWARD_URL, code, speaker or "")
     return timestamp
 
 
 async def check_forward_target() -> dict:
     """Check if the command forward target is reachable."""
-    if not COMMAND_FORWARD_URL:
+    if not config.COMMAND_FORWARD_URL:
         return {"configured": False, "reachable": False}
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
-            response = await client.head(COMMAND_FORWARD_URL)
+            response = await client.head(config.COMMAND_FORWARD_URL)
             # 501 = HEAD not implemented, server is up; treat as reachable
             reachable = response.status_code < 500 or response.status_code == 501
             return {"configured": True, "reachable": reachable, "status_code": response.status_code}

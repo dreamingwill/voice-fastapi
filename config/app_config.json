@@ -16,6 +16,8 @@
   "blank_penalty": 1.0,
   "hr_rule_fsts": "",
   "hr_lexicon": "",
+  "command_forward_url": "http://127.0.0.1:8089/send/message",
+  "command_forward_timeout": 5,
   "min_spk_seconds": 1.5,
   "vad_pre_roll_ms": 300,
   "vad_post_roll_ms": 200,
