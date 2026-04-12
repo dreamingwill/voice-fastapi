@@ -22,6 +22,17 @@ COMMAND_FORWARD_URL = os.getenv("COMMAND_FORWARD_URL")
 COMMAND_FORWARD_TIMEOUT = float(os.getenv("COMMAND_FORWARD_TIMEOUT", "5"))
 print("当前 COMMAND_FORWARD_URL =", COMMAND_FORWARD_URL)
 
+
+def _parse_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(f"Invalid boolean value: {value}")
+
 def _load_config(path: Optional[str], *, required: bool = False) -> Dict[str, Any]:
     if not path:
         return {}
@@ -51,10 +62,19 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--sample_rate", type=int)
     parser.add_argument("--threshold", type=float, default=0.6)
+    parser.add_argument(
+        "--asr_mode",
+        type=str,
+        default="streaming_transducer",
+        choices=["streaming_transducer", "offline_sense_voice"],
+    )
     parser.add_argument("--tokens", type=str)
     parser.add_argument("--encoder", type=str)
     parser.add_argument("--decoder", type=str)
     parser.add_argument("--joiner", type=str)
+    parser.add_argument("--sense_voice_model", type=str, default="")
+    parser.add_argument("--sense_voice_use_itn", type=_parse_bool, default=True)
+    parser.add_argument("--sense_voice_language", type=str, default="auto")
     parser.add_argument("--num_threads", type=int, default=4)
     parser.add_argument("--feature_dim", type=int, default=80)
     parser.add_argument("--decoding_method", type=str, default="greedy_search")

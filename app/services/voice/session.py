@@ -16,7 +16,7 @@ from ..transcripts import append_transcript_segment, finalize_transcript, update
 from ...auth import validate_access_token
 from ..audio_enhancement import AudioEnhancementPipeline, EnhancementConfig
 from ..commands import get_command_service
-from .recognizer import create_recognizer, pcm_bytes_to_float32
+from .recognizer import create_asr_engine, get_asr_mode, get_asr_model_path, pcm_bytes_to_float32
 from .vad import EnergyVad, VadResult, VadTransition
 from .speaker import SpeakerCandidate, SpeakerEmbedder, identify_user
 
@@ -40,26 +40,8 @@ class AsrSession:
         self.ws = websocket
         self.app = app
         self.args = app.state.args
-        self.recognizer = create_recognizer(
-            tokens=self.args.tokens,
-            encoder=self.args.encoder,
-            decoder=self.args.decoder,
-            joiner=self.args.joiner,
-            num_threads=self.args.num_threads,
-            sample_rate=self.args.sample_rate,
-            feature_dim=self.args.feature_dim,
-            decoding_method=self.args.decoding_method,
-            max_active_paths=self.args.max_active_paths,
-            provider=self.args.provider,
-            hotwords_file=self.args.hotwords_file,
-            hotwords_score=self.args.hotwords_score,
-            blank_penalty=self.args.blank_penalty,
-            hr_rule_fsts=self.args.hr_rule_fsts,
-            hr_lexicon=self.args.hr_lexicon,
-            rule1_min_trailing_silence=self.args.rule1_min_trailing_silence,
-            rule2_min_trailing_silence=self.args.rule2_min_trailing_silence,
-            rule3_min_utterance_length=self.args.rule3_min_utterance_length,
-        )
+        self.asr_engine = create_asr_engine(self.args)
+        self.asr_mode = get_asr_mode(self.args)
         self.embedder: SpeakerEmbedder = app.state.embedder
         settings = getattr(app.state, "system_settings", None)
         self.speaker_recognition_enabled = bool(getattr(settings, "enable_speaker_recognition", True))
@@ -68,7 +50,6 @@ class AsrSession:
         self.dtype = "float32"
         self.dtype_hint = "float32"
 
-        self.stream = self.recognizer.create_stream()
         self.total_samples_in = 0
         self.cur_utt_start_sample = 0
         self.cur_utt_audio: Deque[np.ndarray] = deque()
@@ -134,6 +115,9 @@ class AsrSession:
             if (now - self._last_speaker_eval_at) < self._speaker_eval_min_interval_s:
                 return "unknown", 0.0, None, []
         buf = self._concat_cur_utt_audio()
+        max_samples = int(self._speaker_buffer_max_s * self.sample_rate_client)
+        if max_samples > 0 and buf.size > max_samples:
+            buf = buf[-max_samples:]
         need_len = int(self.args.min_spk_seconds * self.sample_rate_client)
         if (not force) and (buf.size < need_len):
             return "unknown", 0.0, None, []
@@ -268,10 +252,6 @@ class AsrSession:
             return
         self.cur_utt_audio.append(samples)
         self.cur_utt_audio_samples += samples.size
-        max_samples = int(self._speaker_buffer_max_s * self.sample_rate_client)
-        while self.cur_utt_audio_samples > max_samples and self.cur_utt_audio:
-            dropped = self.cur_utt_audio.popleft()
-            self.cur_utt_audio_samples -= dropped.size
 
     def _reset_utterance_state(self, start_sample: Optional[int] = None) -> None:
         self.cur_utt_audio.clear()
@@ -471,7 +451,6 @@ class AsrSession:
         )
 
     async def handle_binary_audio(self, data: bytes):
-        chunk_start = time.perf_counter()
         if self._wav_writer is not None:
             try:
                 self._wav_writer.writeframes(data)
@@ -488,9 +467,9 @@ class AsrSession:
 
         if vad_result.started:
             try:
-                self.recognizer.reset(self.stream)
-            except Exception:
-                pass
+                self.asr_engine.on_utterance_start()
+            except Exception as exc:
+                logger.warning("asr.utterance_start failed error=%s", exc)
             self._reset_utterance_state(start_sample=vad_result.start_sample)
 
         if not vad_result.feed_samples:
@@ -512,33 +491,12 @@ class AsrSession:
                 len(self.cur_utt_audio),
             )
 
-        chunk_ms = _ms(feed.size, self.sample_rate_client)
-        self.stream.accept_waveform(self.sample_rate_client, feed)
-        decode_iters = 0
-        while self.recognizer.is_ready(self.stream):
-            self.recognizer.decode_stream(self.stream)
-            decode_iters += 1
-        decode_time_ms = int((time.perf_counter() - chunk_start) * 1000)
-
-        text = self.recognizer.get_result(self.stream)
+        text = self.asr_engine.accept_waveform(self.sample_rate_client, feed) or ""
         speaker = (
             (self.current_speaker_candidate or {}).get("username")
             if self.cur_utt_speaker_guess_sent
             else "unknown"
         )
-        # logger.info(
-        #     (
-        #         "asr.decode session=%s chunk_ms=%s decode_ms=%s decodes=%s "
-        #         "total_ms=%s endpoint=%s text_len=%s"
-        #     ),
-        #     self.ws.scope.get("session_id"),
-        #     chunk_ms,
-        #     decode_time_ms,
-        #     decode_iters,
-        #     _ms(self.total_samples_in, self.sample_rate_client),
-        #     endpoint_detected,
-        #     len(text),
-        # )
 
         if self.speaker_recognition_enabled and not self.cur_utt_speaker_guess_sent:
             guess, sim, cand, topk = self._try_speaker(force=False)
@@ -550,7 +508,9 @@ class AsrSession:
                 await self._send_speaker_state(cand, sim)
         elif not self.speaker_recognition_enabled:
             self.latest_topk = []
-        await self._send_partial(text, speaker)
+
+        if text:
+            await self._send_partial(text, speaker)
 
         if vad_result.ended:
             await self._finalize_vad_utterance(
@@ -568,15 +528,13 @@ class AsrSession:
         snr_db: float,
         dropped_samples: int,
     ) -> None:
-        try:
-            self.stream.input_finished()
-            while self.recognizer.is_ready(self.stream):
-                self.recognizer.decode_stream(self.stream)
-        except Exception as exc:
-            logger.warning("vad.flush failed error=%s", exc)
-
+        utterance_samples = self._concat_cur_utt_audio()
         self.cur_utt_end_sample = end_sample
-        final_text = self.recognizer.get_result(self.stream).strip()
+        try:
+            final_text = self.asr_engine.finalize_utterance(self.sample_rate_client, utterance_samples)
+        except Exception as exc:
+            logger.warning("vad.finalize failed error=%s", exc)
+            final_text = ""
         final_triggered = bool(final_text)
 
         utt_ms = _ms(
@@ -620,9 +578,9 @@ class AsrSession:
 
         self._last_partial_text_sent = None
         try:
-            self.recognizer.reset(self.stream)
+            self.asr_engine.reset()
         except Exception as exc:
-            logger.warning("vad.stream.reset failed error=%s", exc)
+            logger.warning("vad.engine.reset failed error=%s", exc)
 
     async def handle_done(self):
         if self.vad.state in {"SPEECH", "TAIL"}:
@@ -634,7 +592,7 @@ class AsrSession:
                 dropped_samples=(last.dropped_samples if last else 0),
             )
         else:
-            text = self.recognizer.get_result(self.stream).strip()
+            text = (self.asr_engine.flush_session() or "").strip()
             if text:
                 if self.speaker_recognition_enabled:
                     final_spk, final_sim, cand, topk = self._try_speaker(force=True)
@@ -661,12 +619,10 @@ class AsrSession:
 
     def _flush_and_reset_stream(self) -> None:
         try:
-            self.stream.input_finished()
-            while self.recognizer.is_ready(self.stream):
-                self.recognizer.decode_stream(self.stream)
-            self.recognizer.reset(self.stream)
+            self.asr_engine.flush_session()
+            self.asr_engine.reset()
         except Exception as exc:
-            logger.warning("asr.stream.cleanup failed error=%s", exc)
+            logger.warning("asr.engine.cleanup failed error=%s", exc)
         self.cur_utt_audio.clear()
         self.cur_utt_audio_samples = 0
         self.cur_utt_end_sample = None
@@ -793,7 +749,8 @@ class AsrSession:
                 "sessionId": session_id,
                 "threshold": self.args.threshold,
                 "sampleRate": self.sample_rate_client,
-                "model": getattr(self.args, "tokens", None),
+                "asrMode": self.asr_mode,
+                "model": get_asr_model_path(self.args) or getattr(self.args, "tokens", None),
                 "speakerModel": getattr(self.embedder, "model_path", None),
                 "heartbeatInterval": 20000,
                 "commandMatchingEnabled": self.command_matching_enabled,

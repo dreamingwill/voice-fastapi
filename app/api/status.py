@@ -8,6 +8,7 @@ from sqlalchemy import text
 from ..auth import require_admin
 from ..database import engine
 from ..schemas import HealthResponse, MetricsResponse, TokenPayload
+from ..services.voice.asr_engines import get_asr_model_path
 from ..utils import now_utc
 
 router = APIRouter(prefix="/api/status", tags=["status"])
@@ -27,7 +28,7 @@ async def health(request: Request):
         db_status = "error"
 
     args = getattr(request.app.state, "args", Namespace())
-    asr_model = getattr(args, "encoder", None)
+    asr_model = get_asr_model_path(args) or None
     speaker_model = getattr(args, "model_path", None)
     system_settings = getattr(request.app.state, "system_settings", None)
     speaker_enabled = bool(getattr(system_settings, "enable_speaker_recognition", True))

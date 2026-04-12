@@ -1,8 +1,20 @@
-import logging
+from argparse import Namespace
 from typing import Optional
 
 import numpy as np
-import sherpa_onnx
+
+from .asr_engines import (
+    AsrEngineFactory,
+    BaseAsrEngine,
+    OfflineSenseVoiceEngine,
+    StreamingTransducerEngine,
+    build_online_transducer_recognizer,
+    create_asr_engine,
+    create_offline_sense_voice_engine,
+    create_streaming_transducer_engine,
+    get_asr_mode,
+    get_asr_model_path,
+)
 
 
 def create_recognizer(
@@ -25,7 +37,7 @@ def create_recognizer(
     rule2_min_trailing_silence: float = 0.8,
     rule3_min_utterance_length: int = 300,
 ):
-    recognizer = sherpa_onnx.OnlineRecognizer.from_transducer(
+    return build_online_transducer_recognizer(
         tokens=tokens,
         encoder=encoder,
         decoder=decoder,
@@ -44,18 +56,11 @@ def create_recognizer(
         rule1_min_trailing_silence=rule1_min_trailing_silence,
         rule2_min_trailing_silence=rule2_min_trailing_silence,
         rule3_min_utterance_length=rule3_min_utterance_length,
-        enable_endpoint_detection=True,
-    )
-    
-
-    logging.getLogger("asr.recognizer").info(
-        "rule1_min_trailing_silence=%s, rule2_min_trailing_silence=%s, rule3_min_utterance_length=%s",
-        rule1_min_trailing_silence,
-        rule2_min_trailing_silence,
-        rule3_min_utterance_length,
     )
 
-    return recognizer
+
+def create_asr_engine_from_kwargs(**kwargs) -> BaseAsrEngine:
+    return create_asr_engine(Namespace(**kwargs))
 
 
 def pcm_bytes_to_float32(data: bytes, dtype: Optional[str]) -> np.ndarray:
@@ -85,4 +90,17 @@ def pcm_bytes_to_float32(data: bytes, dtype: Optional[str]) -> np.ndarray:
         return np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
 
 
-__all__ = ["create_recognizer", "pcm_bytes_to_float32"]
+__all__ = [
+    "AsrEngineFactory",
+    "BaseAsrEngine",
+    "OfflineSenseVoiceEngine",
+    "StreamingTransducerEngine",
+    "create_asr_engine",
+    "create_asr_engine_from_kwargs",
+    "create_offline_sense_voice_engine",
+    "create_recognizer",
+    "create_streaming_transducer_engine",
+    "get_asr_mode",
+    "get_asr_model_path",
+    "pcm_bytes_to_float32",
+]
