@@ -277,6 +277,13 @@ def _numeric_factor(
     return 1.0
 
 
+@dataclass(frozen=True)
+class StageParseResult:
+    stage: str = ""
+    invalid_timed_stage: bool = False
+    has_timed_stage_phrase: bool = False
+
+
 @dataclass
 class CommandCreatePayload:
     text: str
@@ -419,7 +426,11 @@ class CommandService:
         r"(站综合信息检查|起飞信号检查|第一次综合检查|第二次综合检查|模拟信息检查|模飞检查|对塔无线检查|下面进入基地程序|自跟踪检查|自跟踪复查|分机参数下发)"
     )
     _STAGE_PATTERN = re.compile(r"(五分钟准备|一分钟准备|停)")
+    _TIMED_STAGE_PATTERN = re.compile(r"^([零一二三四五六七八九十两0-9]+)分钟准备$")
+    _TIMED_STAGE_PHRASE_PATTERN = re.compile(r"[零一二三四五六七八九十两0-9]*分钟准备")
     _PREFIX_PATTERN = re.compile(r"^(各号注意[，]?|各号)")
+    _VALID_STAGE_NUMBERS = frozenset({1, 5})
+    _STAGE_TEXT_BY_NUMBER = {1: "一分钟准备", 5: "五分钟准备"}
 
     def __init__(
         self,
@@ -727,6 +738,30 @@ class CommandService:
                 )
         return None
 
+    def _parse_stage(self, remainder: str) -> StageParseResult:
+        content = (remainder or "").strip("，, ")
+        if not content:
+            return StageParseResult()
+        stage_match = self._STAGE_PATTERN.match(content)
+        if stage_match:
+            return StageParseResult(stage=stage_match.group(1), has_timed_stage_phrase="分钟准备" in content)
+        if "分钟准备" not in content:
+            return StageParseResult()
+        timed_phrase = self._TIMED_STAGE_PHRASE_PATTERN.search(content)
+        if not timed_phrase:
+            return StageParseResult(has_timed_stage_phrase=True, invalid_timed_stage=True)
+        timed_stage = timed_phrase.group(0)
+        stage_number_match = self._TIMED_STAGE_PATTERN.match(timed_stage)
+        if not stage_number_match:
+            return StageParseResult(has_timed_stage_phrase=True, invalid_timed_stage=True)
+        stage_number = _parse_numeric_token(stage_number_match.group(1))
+        if stage_number not in self._VALID_STAGE_NUMBERS:
+            return StageParseResult(has_timed_stage_phrase=True, invalid_timed_stage=True)
+        return StageParseResult(
+            stage=self._STAGE_TEXT_BY_NUMBER[stage_number],
+            has_timed_stage_phrase=True,
+        )
+
     def match_command(
         self,
         user_id: int,
@@ -757,6 +792,17 @@ class CommandService:
         state = self._matcher.get_state(GLOBAL_USER_ID)
         if not isinstance(state, Bm25MatcherState):
             raise ValueError("Unexpected matcher state for BM25 backend")
+
+        if self._has_invalid_timed_stage(content):
+            logger.info("command.match result=not_matched reason=invalid_stage_number query=%s", content)
+            return CommandMatchResult(
+                False,
+                None,
+                0.0,
+                original_text=original_text,
+                normalized_text=content,
+                intent_detected=intent_detected,
+            )
 
         # Stage 1: Exact Match (already normalized)
         exact_match = self._find_command_by_text(content, state)
@@ -789,6 +835,12 @@ class CommandService:
             result.match_type = "fuzzy"
         return result
 
+    def _has_invalid_timed_stage(self, content: str) -> bool:
+        stripped = self._PREFIX_PATTERN.sub("", content).strip("，, ")
+        task_match = self._TASK_PATTERN.match(stripped)
+        remainder = stripped[task_match.end():].strip("，, ") if task_match else stripped
+        return self._parse_stage(remainder).invalid_timed_stage
+
     def _match_rules(self, content: str, state: Bm25MatcherState) -> Optional[CommandMatchResult]:
         """
         Attempt to match using extracted Task and Stage patterns.
@@ -803,16 +855,16 @@ class CommandService:
             task = task_match.group(1)
             # Find stage in the remainder of the string
             remainder = stripped[task_match.end():].strip("，, ")
-            stage_match = self._STAGE_PATTERN.match(remainder)
-            stage = stage_match.group(1) if stage_match else ""
+            stage_result = self._parse_stage(remainder)
+            if stage_result.invalid_timed_stage:
+                logger.info("command.match result=not_matched reason=invalid_stage_number query=%s", content)
+                return None
+            stage = stage_result.stage
             
             # Reconstruction attempts
-            candidates = [
-                f"各号注意，{task}{stage}",
-                f"{task}{stage}",
-                f"各号注意，{task}",
-                f"{task}"
-            ]
+            candidates = [f"各号注意，{task}{stage}", f"{task}{stage}"] if stage else []
+            if not stage_result.has_timed_stage_phrase and not remainder:
+                candidates.extend([f"各号注意，{task}", f"{task}"])
             
             for cand in candidates:
                 res = self._find_command_by_text(cand, state)

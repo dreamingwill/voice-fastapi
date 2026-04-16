@@ -53,6 +53,7 @@ def test_rule_matching():
     commands = [
         CommandCreatePayload(text="各号注意，站综合信息检查五分钟准备", code="0001"),
         CommandCreatePayload(text="站综合信息检查一分钟准备", code="0002"),
+        CommandCreatePayload(text="站综合信息检查停", code="0002_1"),
         CommandCreatePayload(text="起飞", code="0003"),
         CommandCreatePayload(text="各号注意，对塔无线检查", code="0023"),
         CommandCreatePayload(text="分机参数下发", code="0037"),
@@ -64,7 +65,8 @@ def test_rule_matching():
     
     match_cases = [
         ("个号注意，站综合信息检查五分钟准备", "各号注意，站综合信息检查五分钟准备", "exact"), 
-        ("站综合信息检查庭", "站综合信息检查一分钟准备", "fuzzy"), 
+        ("站综合信息检查庭", "站综合信息检查停", "exact"),
+        ("站综合信息检查听", "站综合信息检查停", "exact"),
         ("各号注意对塔无线检查", "各号注意，对塔无线检查", "rule"), 
         ("分机参数下放", "分机参数下发", "fuzzy"), 
         ("起废", "起飞", "fuzzy"), 
@@ -85,10 +87,57 @@ def test_rule_matching():
 
     print("Rule-based Matching tests passed!\n")
 
+def test_invalid_timed_stage_rejected():
+    print("Testing invalid timed stage rejection...")
+    session_factory = setup_test_db()
+    service = CommandService(session_factory=session_factory)
+
+    with session_factory() as db:
+        db.add(CommandSettings(user_id=0, enable_matching=True, match_threshold=0.75))
+        db.commit()
+
+    commands = [
+        CommandCreatePayload(text="各号注意，站综合信息检查五分钟准备", code="0001"),
+        CommandCreatePayload(text="站综合信息检查一分钟准备", code="0002"),
+        CommandCreatePayload(text="站综合信息检查停", code="0003"),
+        CommandCreatePayload(text="五分钟准备", code="0033"),
+        CommandCreatePayload(text="一分钟准备", code="0034"),
+    ]
+    service.upload_commands(0, commands)
+
+    invalid_cases = [
+        "站综合信息检查7分钟准备",
+        "站综合信息检查8分钟准备",
+        "站综合信息检查七分钟准备",
+        "站综合信息检查八分钟准备",
+        "各号注意，站综合信息检查8分钟准备",
+        "XX检查7分钟准备",
+        "站综合信息检查分钟准备",
+        "站综合信息检查十分钟准备",
+    ]
+
+    for text in invalid_cases:
+        result = service.match_command(0, text)
+        print(f"Invalid input: {text:25} | Match: {result.command} | Score: {result.score:.2f}")
+        assert not result.matched
+        assert result.command is None
+
+    valid_cases = [
+        ("站综合信息检查1分钟准备", "站综合信息检查一分钟准备"),
+        ("站综合信息检查五分钟准备", "各号注意，站综合信息检查五分钟准备"),
+    ]
+
+    for text, expected_cmd in valid_cases:
+        result = service.match_command(0, text)
+        print(f"Valid input: {text:25} | Match: {result.command} | Score: {result.score:.2f}")
+        assert result.matched
+        assert result.command == expected_cmd
+
 if __name__ == "__main__":
     try:
         test_intent_classifier()
         test_rule_matching()
+        test_invalid_timed_stage_rejected()
         print("All tests passed!")
     except Exception as e:
         print(f"Test failed: {e}")

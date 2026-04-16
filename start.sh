@@ -13,4 +13,5 @@ conda activate voice310
 cd /home/orangepi/voice/voice-fastapi
 
 # === 启动服务 ===
+# python main.py --config config/app_config_mac_offline_sense_voice.json
 exec python main.py --config config/app_config.json
