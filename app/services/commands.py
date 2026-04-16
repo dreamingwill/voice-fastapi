@@ -283,6 +283,11 @@ class CommandCreatePayload:
     code: Optional[str] = None
 
 
+try:
+    from typing import Literal
+except ImportError:
+    from typing_extensions import Literal
+
 @dataclass
 class CommandMatchResult:
     matched: bool
@@ -292,6 +297,48 @@ class CommandMatchResult:
     command_code: Optional[str] = None
     original_text: str = ""
     normalized_text: str = ""
+    intent_detected: bool = False
+    match_type: Optional[Literal["exact", "rule", "fuzzy"]] = None
+
+
+class IntentClassifier:
+    """
+    Rule-based intent classifier to determine if a text is likely a command.
+    """
+    MIN_COMMAND_LENGTH = 2
+    MAX_COMMAND_LENGTH = 40
+
+    # Keywords that strongly indicate a command intent
+    INTENT_KEYWORDS = {
+        "检查", "准备", "停", "起飞", "点火", "发射", "各号", "注意", "下发", "程序", "跟踪", "复查"
+    }
+
+    # Regex patterns for common command structures
+    INTENT_PATTERNS = [
+        re.compile(r"^各号.*"),
+        re.compile(r".*?准备$"),
+        re.compile(r".*?检查$"),
+        re.compile(r"^[点火|起飞|发射|停]$"),
+    ]
+
+    @classmethod
+    def is_intent(cls, text: str) -> bool:
+        if not text:
+            return False
+        
+        # Length constraint: commands are usually short
+        if len(text) < cls.MIN_COMMAND_LENGTH or len(text) > cls.MAX_COMMAND_LENGTH:
+            return False
+
+        # Keyword trigger
+        if any(keyword in text for keyword in cls.INTENT_KEYWORDS):
+            return True
+
+        # Regex pattern trigger
+        if any(pattern.match(text) for pattern in cls.INTENT_PATTERNS):
+            return True
+
+        return False
 
 
 @dataclass
@@ -367,6 +414,13 @@ class CommandMatcher:
 
 
 class CommandService:
+    # Pre-compiled regex for template matching based on zhiling.txt
+    _TASK_PATTERN = re.compile(
+        r"(站综合信息检查|起飞信号检查|第一次综合检查|第二次综合检查|模拟信息检查|模飞检查|对塔无线检查|下面进入基地程序|自跟踪检查|自跟踪复查|分机参数下发)"
+    )
+    _STAGE_PATTERN = re.compile(r"(五分钟准备|一分钟准备|停)")
+    _PREFIX_PATTERN = re.compile(r"^(各号注意[，]?|各号)")
+
     def __init__(
         self,
         *,
@@ -374,6 +428,7 @@ class CommandService:
     ):
         self._session_factory = session_factory
         self._matcher = CommandMatcher(session_factory=session_factory)
+        self.enable_intent_classification = os.getenv("COMMAND_INTENT_CLASSIFICATION", "true").strip().lower() in {"1", "true", "yes", "on"}
 
     @property
     def default_threshold(self) -> float:
@@ -659,6 +714,19 @@ class CommandService:
             "updated_at": _ts(command.updated_at),
         }
 
+    def _find_command_by_text(self, text: str, state: Bm25MatcherState) -> Optional[CommandMatchResult]:
+        """
+        Helper to find a command by exact or normalized text match in the current state.
+        """
+        for i, cmd_text in enumerate(state.texts):
+            if text == cmd_text or text == state.normalized_texts[i]:
+                return CommandMatchResult(
+                    True, cmd_text, 1.0,
+                    command_id=state.command_ids[i],
+                    command_code=state.command_codes[i]
+                )
+        return None
+
     def match_command(
         self,
         user_id: int,
@@ -674,17 +742,94 @@ class CommandService:
         if not content:
             return CommandMatchResult(False, None, 0.0, original_text=original_text, normalized_text="")
 
+        intent_detected = IntentClassifier.is_intent(content) if self.enable_intent_classification else True
+
         # Ignore user scope; use global settings
         current_settings = settings or self.get_settings(GLOBAL_USER_ID)
         if not current_settings.enable_matching:
-            return CommandMatchResult(False, None, 0.0, original_text=original_text, normalized_text=content)
-
-        threshold = threshold_override or current_settings.match_threshold or self.default_threshold
+            return CommandMatchResult(
+                False, None, 0.0,
+                original_text=original_text,
+                normalized_text=content,
+                intent_detected=intent_detected
+            )
 
         state = self._matcher.get_state(GLOBAL_USER_ID)
         if not isinstance(state, Bm25MatcherState):
             raise ValueError("Unexpected matcher state for BM25 backend")
-        return self._match_with_bm25(content, state, threshold, original_text=original_text)
+
+        # Stage 1: Exact Match (already normalized)
+        exact_match = self._find_command_by_text(content, state)
+        if exact_match:
+            exact_match.original_text = original_text
+            exact_match.normalized_text = content
+            exact_match.intent_detected = True
+            exact_match.match_type = "exact"
+            logger.info("command.match result=matched type=exact query=%s candidate=%s", content, exact_match.command)
+            return exact_match
+
+        # Stage 2: Rule-based / Template Match
+        if self.enable_intent_classification:
+            rule_match = self._match_rules(content, state)
+            if rule_match:
+                rule_match.original_text = original_text
+                rule_match.normalized_text = content
+                rule_match.intent_detected = True
+                return rule_match
+
+        # Stage 3: Fuzzy Match Fallback
+        threshold = threshold_override or current_settings.match_threshold or self.default_threshold
+        if self.enable_intent_classification and not intent_detected:
+            # Boost threshold for non-intent text to avoid mis-matching chat to commands
+            threshold = max(threshold, 0.85)
+
+        result = self._match_with_bm25(content, state, threshold, original_text=original_text)
+        result.intent_detected = intent_detected
+        if result.matched:
+            result.match_type = "fuzzy"
+        return result
+
+    def _match_rules(self, content: str, state: Bm25MatcherState) -> Optional[CommandMatchResult]:
+        """
+        Attempt to match using extracted Task and Stage patterns.
+        """
+        # 1. Clean prefix
+        stripped = self._PREFIX_PATTERN.sub("", content).strip("，, ")
+        
+        # 2. Try to find Task and Stage using match() to ensure they start at the beginning of the stripped text
+        task_match = self._TASK_PATTERN.match(stripped)
+        
+        if task_match:
+            task = task_match.group(1)
+            # Find stage in the remainder of the string
+            remainder = stripped[task_match.end():].strip("，, ")
+            stage_match = self._STAGE_PATTERN.match(remainder)
+            stage = stage_match.group(1) if stage_match else ""
+            
+            # Reconstruction attempts
+            candidates = [
+                f"各号注意，{task}{stage}",
+                f"{task}{stage}",
+                f"各号注意，{task}",
+                f"{task}"
+            ]
+            
+            for cand in candidates:
+                res = self._find_command_by_text(cand, state)
+                if res:
+                    res.score = 0.95
+                    res.match_type = "rule"
+                    logger.info("command.match result=matched type=rule query=%s candidate=%s", content, res.command)
+                    return res
+        
+        # 3. Special case for independent stages or single words
+        if content in {"起飞", "点火", "发射", "停", "五分钟准备", "一分钟准备"}:
+             res = self._find_command_by_text(content, state)
+             if res:
+                 res.match_type = "exact"
+                 return res
+
+        return None
 
     def _match_with_bm25(
         self,

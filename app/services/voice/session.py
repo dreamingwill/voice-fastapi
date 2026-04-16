@@ -824,7 +824,11 @@ class AsrSession:
             logger.error("command.match failed error=%s", exc, exc_info=True)
             return {"matched": False}
 
-        payload: Dict[str, Any] = {"matched": bool(result.matched)}
+        payload: Dict[str, Any] = {
+            "matched": bool(result.matched),
+            "intent_detected": bool(getattr(result, "intent_detected", False)),
+            "match_type": getattr(result, "match_type", None)
+        }
         if result.matched:
             payload["command"] = result.command
             if result.command_code:

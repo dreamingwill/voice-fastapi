@@ -91,6 +91,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rule3_min_utterance_length", type=int, default=15)
     parser.add_argument("--command_forward_url", type=str, default="")
     parser.add_argument("--command_forward_timeout", type=float, default=5.0)
+    parser.add_argument(
+        "--command_intent_classification",
+        type=_parse_bool,
+        default=os.getenv("COMMAND_INTENT_CLASSIFICATION", "true").strip().lower() in {"1", "true", "yes", "on"},
+    )
     parser.add_argument("--vad_pre_roll_ms", type=int, default=int(os.getenv("PRE_ROLL_MS", "300")))
     parser.add_argument("--vad_post_roll_ms", type=int, default=int(os.getenv("POST_ROLL_MS", "700")))
     parser.add_argument("--vad_snr_open_db", type=float, default=float(os.getenv("SNR_OPEN_DB", "10")))
